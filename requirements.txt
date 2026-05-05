@@ -1,23 +1,12 @@
-# LangGraph 核心
-langgraph
-langchain
-langchain-core
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-ollama>=0.3.0
 
-# 数据库
-sqlalchemy
-pymysql
-redis
-
-# 安全
-pyjwt
-bcrypt
-
-# Web 服务
-flask
-uvicorn
-fastapi
-
-# 工具
-python-dotenv
-pandas
-pytest
+python-dotenv>=1.0.0
+pydantic>=2.0
+sqlalchemy>=2.0
+fastapi>=0.100.0
+uvicorn>=0.23.2
+flask>=3.0.0

@@ -1,7 +1,5 @@
-# 编写项目入口 main.py
-from service.local_service import LocalService
+from db.init_db import init_database
+from service.cli import run_cli
 
-if __name__ == "__main__":
-    # 启动本地服务
-    servece = LocalService()
-    servece.chat()
+init_database()
+run_cli()

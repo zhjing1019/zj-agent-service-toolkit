@@ -1,17 +1,23 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
 from config.settings import settings
+import os
 
-class Database:
-    def __init__(self):
-        if settings.DB_TYPE == "sqlite":
-            self.engine = create_engine(f"sqlite:///{settings.SQLITE_PATH}")
-        elif settings.DB_TYPE == "mysql":
-            self.engine = create_engine(f"mysql+pymysql://...")
-        
-        self.Session = sessionmaker(bind=self.engine)
+os.makedirs(os.path.dirname(settings.SQLITE_PATH), exist_ok=True)
 
-    def get_session(self):
-        return self.Session()
+engine = create_engine(
+    f"sqlite:///{settings.SQLITE_PATH}",
+    connect_args={"check_same_thread": False}
+)
 
-db = Database()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Session = SessionLocal  # 别名，方便导入使用
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
