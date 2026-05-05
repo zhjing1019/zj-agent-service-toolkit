@@ -35,4 +35,10 @@ class Settings:
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 512))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 60))
 
+    # 多模型配置
+    DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "deepseek")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+
 settings = Settings()

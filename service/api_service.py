@@ -1,18 +1,14 @@
 # 升级成 HTTP 接口服务
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from pydantic import BaseModel
 from agent.base_agent import BaseAgent
-import shutil
-from core.rag import load_knowledge_to_vector_incremental
-from config.limiter import limiter
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from core.graph import agent_graph
 from db.base import get_db
 from db.repository import chat_repo
-from db.log_repo import log_repo
-from config.limiter import limiter
+from core.admin import reset_all_chat_session, switch_llm_model
+
 
 
 class AgentChatReq(BaseModel):
@@ -27,20 +23,15 @@ agent = BaseAgent()
 class TaskRequest(BaseModel):
     task: str
 
-@router.post("/upload/knowledge")
-async def upload_knowledge_file(file: UploadFile = File(...)):
-    """上传 txt/md/pdf 知识库文件，自动增量入库"""
-    know_dir = settings.RAG_KNOWLEDGE_DIR
-    os.makedirs(know_dir, exist_ok=True)
+# 运维：清空所有会话历史
+@router.post("/admin/reset-session")
+def api_reset_session(db: Session = Depends(get_db)):
+    return reset_all_chat_session(db)
 
-    # 保存文件到知识库目录
-    save_path = os.path.join(know_dir, file.filename)
-    with open(save_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    # 增量向量化入库
-    load_knowledge_to_vector_incremental()
-    return {"code": 200, "msg": "文件上传并入库成功", "filename": file.filename}
+# 运维：动态切换模型
+@router.post("/admin/switch-llm")
+def api_switch_llm(provider: str = Query(..., description="支持 deepseek / openai")):
+    return switch_llm_model(provider)
 
 @router.post("/api/agent/run")
 def agent_run(request: TaskRequest):
@@ -66,7 +57,6 @@ def agent_memory():
     }
 
 @router.post("/chat")
-@limiter.limit("20/minute")
 def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db)):
     try:
         # 无会话ID自动生成
@@ -94,16 +84,10 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
         chat_repo.save_chat(db, req.session_id, "user", req.task)
         chat_repo.save_chat(db, req.session_id, "agent", agent_reply)
 
-        # 保存接口访问日志
-        client_ip = request.client.host
-        log_repo.save_api_log(db, req.session_id, req.task, agent_reply, "success", client_ip)
-
         return {
             "code": 200,
             "session_id": req.session_id,
             "data": agent_reply
         }
     except Exception as e:
-        client_ip = request.client.host
-        log_repo.save_api_log(db, req.session_id or "", req.task, str(e), "fail", client_ip)
         raise e

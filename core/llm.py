@@ -1,13 +1,27 @@
 from langchain_openai import ChatOpenAI
 from config.settings import settings
 
-# DeepSeek 兼容 OpenAI 接口
-def create_deepseek_llm():
-    return ChatOpenAI(
-        api_key=settings.DEEPSEEK_API_KEY,
-        base_url=settings.DEEPSEEK_BASE_URL,
-        model=settings.DEEPSEEK_MODEL,
-        temperature=0.1,
-    )
+def get_llm_factory(provider: str = None):
+    """工厂模式：动态获取 DeepSeek / OpenAI LLM"""
+    if not provider:
+        provider = settings.DEFAULT_LLM_PROVIDER
 
-llm = create_deepseek_llm()
+    if provider.lower() == "deepseek":
+        return ChatOpenAI(
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+            model=settings.DEEPSEEK_MODEL,
+            temperature=0.1,
+        )
+    elif provider.lower() == "openai":
+        return ChatOpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
+            model=settings.OPENAI_MODEL,
+            temperature=0.1,
+        )
+    else:
+        raise ValueError("不支持的模型提供商：只支持 deepseek / openai")
+
+# 默认全局LLM
+llm = get_llm_factory()
