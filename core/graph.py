@@ -13,12 +13,18 @@ from security.validator import security
 from core.intent_parser import parse_task_by_deepseek
 from toolkit.base_tool import TOOL_REGISTRY
 from core.llm import llm
+# 可视化导入（不需要额外导入，使用编译后图的get_graph()方法）
 
 # 2. 定义工作流类
 class AgentGraph:
     # 初始化：自动构建流程图
     def __init__(self):
         self.graph = self.build()
+        # ======================
+        # 自动生成工作流可视化图
+        # ======================
+        self.visualize()
+
 
     # 3. 核心：构建流程图
     def build(self):
@@ -52,8 +58,25 @@ class AgentGraph:
         workflow.add_edge("run_tool", END)
         workflow.add_edge("direct_answer", END)
 
+
         # 编译工作流
         return workflow.compile()
+    
+        # ======================
+    # 可视化方法
+    # ======================
+    def visualize(self):
+        """生成流程图图片：agent_graph.png"""
+        try:
+            # 使用get_graph()获取图结构，然后生成mermaid格式的PNG图片
+            self.graph.get_graph().draw_mermaid_png(output_file_path="agent_graph.png")
+            print("✅ 工作流可视化图已生成：agent_graph.png")
+        except Exception as e:
+            # 如果生成PNG失败（可能缺少依赖），生成mermaid文本
+            mermaid_code = self.graph.get_graph().draw_mermaid()
+            with open("agent_graph.mmd", "w") as f:
+                f.write(mermaid_code)
+            print(f"⚠️ 生成PNG失败，已生成mermaid文件：agent_graph.mmd (错误: {str(e)})")
 
     # ====================== 节点 1：安全检查 ======================
     def security_check_node(self, state: AgentState):
