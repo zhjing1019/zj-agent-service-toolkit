@@ -1,0 +1,79 @@
+# ===================== 虚拟环境 =====================
+venv/
+env/
+.venv/
+.env
+env.bak/
+venv.bak/
+
+# ===================== Python 缓存 =====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ===================== 日志 & 运行临时文件 =====================
+logs/
+*.log
+*.out
+*.err
+
+# ===================== 数据库文件 =====================
+*.db
+*.sqlite
+*.sqlite3
+db/*.db
+db/*.sqlite3
+
+# ===================== IDE 编辑器 =====================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+*.iml
+.project
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# ===================== 模型 & 大模型缓存 =====================
+models/
+cache/
+llm_cache/
+.langgraph/
+
+# ===================== 临时文件 & 上传文件 =====================
+tmp/
+temp/
+upload/
+*.tmp
+*.temp
+test.txt
+my_task.txt
+
+# ===================== 依赖 & 环境 =====================
+requirements-lock.txt
+.pipenv/
+Pipfile.lock
+poetry.lock
+
+# ===================== FastAPI / Uvicorn =====================
+*.pid
+uvicorn.pid

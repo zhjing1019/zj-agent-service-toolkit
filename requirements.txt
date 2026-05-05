@@ -1,0 +1,23 @@
+# LangGraph 核心
+langgraph
+langchain
+langchain-core
+
+# 数据库
+sqlalchemy
+pymysql
+redis
+
+# 安全
+pyjwt
+bcrypt
+
+# Web 服务
+flask
+uvicorn
+fastapi
+
+# 工具
+python-dotenv
+pandas
+pytest
