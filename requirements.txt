@@ -1,12 +1,18 @@
-langgraph>=0.2.0
+# LangChain 核心
 langchain>=0.3.0
 langchain-core>=0.3.0
-langchain-openai>=0.2.0
-langchain-ollama>=0.3.0
+langgraph>=0.2.0
 
-python-dotenv>=1.0.0
-pydantic>=2.0
+# DeepSeek 官方支持
+langchain-openai>=0.2.0
+
+# 数据库
 sqlalchemy>=2.0
+
+# Web 服务
 fastapi>=0.100.0
 uvicorn>=0.23.2
-flask>=3.0.0
+
+# 工具
+python-dotenv>=1.0.0
+pydantic>=2.0

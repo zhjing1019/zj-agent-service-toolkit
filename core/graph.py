@@ -1,69 +1,99 @@
+# security_check
+#        ↓ (安全)
+# llm_parse
+#        ↓ (需要工具)
+# run_tool → END
+#        ↓ (不需要)
+# direct_answer → END
+
+# 1. 导入依赖
 from langgraph.graph import StateGraph, END
 from core.state import AgentState
 from security.validator import security
-from core.intent_parser import parse_task
-from toolkit import TOOL_REGISTRY
+from core.intent_parser import parse_task_by_deepseek
+from toolkit.base_tool import TOOL_REGISTRY
+from core.llm import llm
 
+# 2. 定义工作流类
 class AgentGraph:
+    # 初始化：自动构建流程图
     def __init__(self):
         self.graph = self.build()
 
+    # 3. 核心：构建流程图
     def build(self):
+        # 定义工作流，使用我们定义的状态类型 AgentState
         workflow = StateGraph(AgentState)
 
-        # 四个节点
+        # ====================== 注册 4 个节点 ======================
         workflow.add_node("security_check", self.security_check_node)
-        workflow.add_node("load_history", self.load_history_node)
-        workflow.add_node("intent_parse", self.intent_parse_node)
+        workflow.add_node("llm_parse", self.llm_parse_node)
         workflow.add_node("run_tool", self.run_tool_node)
+        workflow.add_node("direct_answer", self.direct_answer_node)
 
-        # 入口
+        # ====================== 设置入口 ======================
         workflow.set_entry_point("security_check")
 
-        # 安全通过 → 加载历史
+        # ====================== 条件边 1：安全检查结果 ======================
         workflow.add_conditional_edges(
             "security_check",
             lambda s: s["is_safe"],
-            {True: "load_history", False: END}
+            {True: "llm_parse", False: END}
         )
 
-        workflow.add_edge("load_history", "intent_parse")
-        workflow.add_edge("intent_parse", "run_tool")
-        workflow.add_edge("run_tool", END)
+        # ====================== 条件边 2：是否需要调用工具 ======================
+        workflow.add_conditional_edges(
+            "llm_parse",
+            lambda s: s["need_tool"],
+            {True: "run_tool", False: "direct_answer"}
+        )
 
+        # ====================== 普通边：执行完结束 ======================
+        workflow.add_edge("run_tool", END)
+        workflow.add_edge("direct_answer", END)
+
+        # 编译工作流
         return workflow.compile()
 
-    # 1. 安全校验
+    # ====================== 节点 1：安全检查 ======================
     def security_check_node(self, state: AgentState):
         safe = security.check_input(state["task"])
         return {"is_safe": safe}
 
-    # 2. 加载历史记忆
-    def load_history_node(self, state: AgentState):
-        # 后续可以在这里基于history做上下文理解
-        return {"history": state["history"]}
-
-    # 3. 意图解析
-    def intent_parse_node(self, state: AgentState):
-        parsed = parse_task(state["task"])
+    # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
+    def llm_parse_node(self, state: AgentState):
+        parsed = parse_task_by_deepseek(state["task"])
+        
+        # 清理键名，移除可能的空格和换行符
+        cleaned_parsed = {}
+        for key, value in parsed.items():
+            clean_key = key.strip().strip('"')
+            cleaned_parsed[clean_key] = value
+        
         return {
-            "tool_name": parsed["tool_name"],
-            "tool_params": parsed["tool_params"]
+            "need_tool": cleaned_parsed.get("need_tool", False),
+            "tool_name": cleaned_parsed.get("tool_name"),
+            "tool_params": cleaned_parsed.get("params", []),
         }
 
-    # 4. 执行工具
+    # ====================== 节点 3：执行工具 ======================
     def run_tool_node(self, state: AgentState):
         tool_name = state["tool_name"]
-        tool_params = state["tool_params"]
+        params = state["tool_params"]
 
-        if not tool_name or tool_name not in TOOL_REGISTRY:
-            return {"result": "我暂时无法理解并处理这个任务"}
+        if tool_name not in TOOL_REGISTRY:
+            return {"result": "无法识别工具"}
 
         try:
-            func = TOOL_REGISTRY[tool_name]
-            res = func(*tool_params)
-            return {"result": f"执行成功：{res}"}
+            res = TOOL_REGISTRY[tool_name](*params)
+            return {"result": f"✅ 执行结果：{res}"}
         except Exception as e:
-            return {"result": f"执行失败：{str(e)}"}
+            return {"result": f"❌ 执行失败：{str(e)}"}
 
+    # ====================== 节点 4：直接回答（不用工具） ======================
+    def direct_answer_node(self, state: AgentState):
+        reply = llm.invoke(state["task"])
+        return {"result": reply.content}
+
+# 全局单例，整个项目共用一个图
 agent_graph = AgentGraph()
