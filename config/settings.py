@@ -20,4 +20,8 @@ class Settings:
     # 安全
     SAFE_MODE = os.getenv("SAFE_MODE", "True") == "True"
 
+    # 工具配置
+    DEFAULT_FILE_NAME = os.getenv("DEFAULT_FILE_NAME", "output.txt")
+    MAX_MEMORY = int(os.getenv("MAX_MEMORY", 10))
+
 settings = Settings()
