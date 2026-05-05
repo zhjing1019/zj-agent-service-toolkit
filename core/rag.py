@@ -68,3 +68,14 @@ def query_knowledge(question: str) -> str:
     if len(context) > settings.RAG_MAX_CONTEXT_LEN:
         context = context[:settings.RAG_MAX_CONTEXT_LEN] + "\n...（内容已截断）"
     return context
+
+def query_knowledge_with_history(question: str, history_list: List[Dict]) -> str:
+    """拼接历史对话 + 当前问题，再做RAG检索"""
+    # 拼接最近3轮历史
+    history_text = ""
+    for item in history_list[-6:]:
+        history_text += f"{item['role']}：{item['content']}\n"
+
+    # 融合历史+当前问题
+    full_query = f"对话历史：\n{history_text}\n当前问题：{question}"
+    return query_knowledge(full_query)
