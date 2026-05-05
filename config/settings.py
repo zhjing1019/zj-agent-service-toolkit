@@ -24,4 +24,9 @@ class Settings:
     DEFAULT_FILE_NAME = os.getenv("DEFAULT_FILE_NAME", "output.txt")
     MAX_MEMORY = int(os.getenv("MAX_MEMORY", 10))
 
+    # RAG 知识库
+    RAG_KNOWLEDGE_DIR = os.getenv("RAG_KNOWLEDGE_DIR", "./knowledge")
+    CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "./chroma_db")
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
 settings = Settings()

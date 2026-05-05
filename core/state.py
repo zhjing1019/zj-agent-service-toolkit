@@ -8,3 +8,4 @@ class AgentState(TypedDict):
     tool_params: list
     result: str
     history: List[Dict]
+    rag_context: str    # 新增：知识库检索上下文
