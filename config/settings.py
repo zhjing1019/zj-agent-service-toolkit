@@ -29,4 +29,10 @@ class Settings:
     CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "./chroma_db")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
+    # RAG 高级参数
+    RAG_TOP_K = int(os.getenv("RAG_TOP_K", 3))
+    RAG_MAX_CONTEXT_LEN = int(os.getenv("RAG_MAX_CONTEXT_LEN", 2000))
+    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 512))
+    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 60))
+
 settings = Settings()

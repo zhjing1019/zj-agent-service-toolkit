@@ -115,8 +115,24 @@ class AgentGraph:
 
     # ====================== 节点 4：直接回答（不用工具） ======================
     def direct_answer_node(self, state: AgentState):
-        reply = llm.invoke(state["task"])
-        return {"result": reply.content}
+        context = state.get("rag_context", "")
+        task = state["task"]
+
+        prompt = f"""
+你是专业智能问答助手，请严格遵循以下规则：
+1. 优先参考下方【知识库参考内容】回答用户问题
+2. 如果参考内容无相关信息，使用自身知识正常回答
+3. 回答简洁准确，不要编造无关信息
+4. 不要输出多余解释、不要重复提问
+
+【知识库参考内容】
+{context}
+
+【用户问题】
+{task}
+"""
+        reply = llm.invoke(prompt)
+        return {"result": reply.content.strip()}
 
 # 全局单例，整个项目共用一个图
 agent_graph = AgentGraph()
