@@ -28,6 +28,10 @@ class Settings:
     RAG_KNOWLEDGE_DIR = os.getenv("RAG_KNOWLEDGE_DIR", "./knowledge")
     CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "./chroma_db")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    # 嵌入模型下载：国内/弱网可设镜像与超时（见 .env 示例）
+    HF_ENDPOINT = os.getenv("HF_ENDPOINT", "").strip().rstrip("/")
+    HF_HUB_DOWNLOAD_TIMEOUT = int(os.getenv("HF_HUB_DOWNLOAD_TIMEOUT", "300"))
+    HUGGINGFACE_HUB_CACHE = os.getenv("HUGGINGFACE_HUB_CACHE", "").strip()
 
     # RAG 高级参数
     RAG_TOP_K = int(os.getenv("RAG_TOP_K", 3))
@@ -40,5 +44,10 @@ class Settings:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+
+    # 混合检索 BM25 + 向量（.env 里用 true/false 字符串，勿写 Python 的 true/True 到错误位置）
+    HYBRID_TOP_K = int(os.getenv("HYBRID_TOP_K", os.getenv("RAG_TOP_K", "3")))
+    BM25_TOP_K = int(os.getenv("BM25_TOP_K", os.getenv("RAG_TOP_K", "3")))
+    RERANK_ENABLE = os.getenv("RERANK_ENABLE", "false").lower() in ("true", "1", "yes")
 
 settings = Settings()

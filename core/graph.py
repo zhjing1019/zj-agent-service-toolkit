@@ -13,7 +13,7 @@ from security.validator import security
 from core.intent_parser import parse_task_by_deepseek
 from toolkit.base_tool import TOOL_REGISTRY
 from core.llm import llm
-# from core.rag import query_knowledge_with_history
+from core.rag import query_knowledge_with_history
 from core.multi_agent import planner_agent, summary_agent
 # 可视化功能已内置在编译后的图对象中，无需额外导入
 
@@ -115,9 +115,9 @@ class AgentGraph:
     
     # 3. RAG检索
     def rag_retrieve_node(self, state: AgentState):
-        # context = query_knowledge_with_history(state["task"], state["history"])
-        # return {"rag_context": context}
-        return {"rag_context": ""}
+        context = query_knowledge_with_history(state["task"], state["history"])
+        return {"rag_context": context}
+        # return {"rag_context": ""}
 
     # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
     def llm_parse_node(self, state: AgentState):

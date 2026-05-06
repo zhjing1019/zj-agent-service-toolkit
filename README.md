@@ -52,9 +52,20 @@ langgraph-agent-sqlite/
 ## 环境配置
 ### 1. 安装依赖
 ```bash
-python -m venv venv
+python3 -m venv venv
+
 source venv/bin/activate
+
+
+python3.11 -m pip --version
+python3.11 -m pip install ...
+python3.11 -m pip install -r requirements.txt
 pip install -r requirements.txt
+
+source .venv/bin/activate
+python3.11 -m pip install -r requirements.txt
+
+python3.11 main.py
 ```
 
 运行  python3 main.py
