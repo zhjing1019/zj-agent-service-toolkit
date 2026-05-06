@@ -141,13 +141,13 @@ class AgentGraph:
         params = state["tool_params"]
 
         if tool_name not in TOOL_REGISTRY:
-            return {"result": "无法识别工具"}
+            return {"task_output": "无法识别工具"}
 
         try:
             res = TOOL_REGISTRY[tool_name](*params)
-            return {"result": f"✅ 执行结果：{res}"}
+            return {"task_output": f"✅ 执行结果：{res}"}
         except Exception as e:
-            return {"result": f"❌ 执行失败：{str(e)}"}
+            return {"task_output": f"❌ 执行失败：{str(e)}"}
 
     # ====================== 节点 4：直接回答（不用工具） ======================
     # 6. RAG问答Agent
