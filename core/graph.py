@@ -1,10 +1,10 @@
-# security_check
-#        ↓ (安全)
-# llm_parse
-#        ↓ (需要工具)
-# run_tool → END
-#        ↓ (不需要)
-# direct_answer → END
+# 安全校验 
+#    ↓
+# 规划Agent（任务拆解分流）
+#    ↓ 分支判断
+# 工具执行Agent  /  RAG知识库Agent
+#    ↓           /
+# 汇总输出Agent → 结束
 
 # 1. 导入依赖
 from langgraph.graph import StateGraph, END
@@ -13,7 +13,9 @@ from security.validator import security
 from core.intent_parser import parse_task_by_deepseek
 from toolkit.base_tool import TOOL_REGISTRY
 from core.llm import llm
-# 可视化导入（不需要额外导入，使用编译后图的get_graph()方法）
+# from core.rag import query_knowledge_with_history
+from core.multi_agent import planner_agent, summary_agent
+# 可视化功能已内置在编译后的图对象中，无需额外导入
 
 # 2. 定义工作流类
 class AgentGraph:
@@ -37,6 +39,13 @@ class AgentGraph:
         workflow.add_node("run_tool", self.run_tool_node)
         workflow.add_node("direct_answer", self.direct_answer_node)
 
+        # ========== 新增多Agent节点 ==========
+        workflow.add_node("planner_agent", self.planner_agent_node)
+        workflow.add_node("rag_answer_agent", self.rag_answer_node)
+        workflow.add_node("chat_answer_agent", self.chat_answer_agent_node)
+        workflow.add_node("summary_agent", self.summary_agent_node)
+        workflow.add_node("rag_retrieve", self.rag_retrieve_node)
+
         # ====================== 设置入口 ======================
         workflow.set_entry_point("security_check")
 
@@ -47,16 +56,32 @@ class AgentGraph:
             {True: "llm_parse", False: END}
         )
 
-        # ====================== 条件边 2：是否需要调用工具 ======================
+        # 规划Agent 条件分支路由
         workflow.add_conditional_edges(
-            "llm_parse",
-            lambda s: s["need_tool"],
-            {True: "run_tool", False: "direct_answer"}
+            "planner_agent",
+            lambda s: s["agent_type"],
+            {
+                "tool": "llm_parse",
+                "rag": "rag_retrieve",
+                "chat": "chat_answer_agent"
+            }
         )
 
-        # ====================== 普通边：执行完结束 ======================
-        workflow.add_edge("run_tool", END)
-        workflow.add_edge("direct_answer", END)
+        # 工具链路
+        workflow.add_edge("llm_parse", "run_tool")
+        workflow.add_edge("run_tool", "summary_agent")
+
+        # RAG知识库链路
+        workflow.add_edge("rag_retrieve", "rag_answer_agent")
+        workflow.add_edge("rag_answer_agent", "summary_agent")
+
+        # 普通闲聊链路
+        workflow.add_edge("chat_answer_agent", "summary_agent")
+
+        # 汇总结束
+        workflow.add_edge("summary_agent", END)
+
+        return workflow.compile()
 
 
         # 编译工作流
@@ -82,6 +107,17 @@ class AgentGraph:
     def security_check_node(self, state: AgentState):
         safe = security.check_input(state["task"])
         return {"is_safe": safe}
+    
+    # 2. 规划调度Agent
+    def planner_agent_node(self, state: AgentState):
+        agent_type = planner_agent(state["task"])
+        return {"agent_type": agent_type}
+    
+    # 3. RAG检索
+    def rag_retrieve_node(self, state: AgentState):
+        # context = query_knowledge_with_history(state["task"], state["history"])
+        # return {"rag_context": context}
+        return {"rag_context": ""}
 
     # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
     def llm_parse_node(self, state: AgentState):
@@ -114,6 +150,29 @@ class AgentGraph:
             return {"result": f"❌ 执行失败：{str(e)}"}
 
     # ====================== 节点 4：直接回答（不用工具） ======================
+    # 6. RAG问答Agent
+    def rag_answer_node(self, state: AgentState):
+        context = state.get("rag_context", "")
+        task = state["task"]
+        prompt = f"""
+参考知识库内容：
+{context}
+用户问题：{task}
+请基于参考内容专业回答。
+"""
+        reply = llm.invoke(prompt)
+        return {"task_output": reply.content.strip()}
+
+    # 7. 普通闲聊Agent
+    def chat_answer_agent_node(self, state: AgentState):
+        reply = llm.invoke(state["task"])
+        return {"task_output": reply.content.strip()}
+
+    # 8. 汇总输出Agent
+    def summary_agent_node(self, state: AgentState):
+        final = summary_agent(state["task"], state["task_output"])
+        return {"result": final}
+
     def direct_answer_node(self, state: AgentState):
         reply = llm.invoke(state["task"])
         return {"result": reply.content}

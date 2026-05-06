@@ -2,9 +2,18 @@
 langchain>=0.3.0
 langchain-core>=0.3.0
 langgraph>=0.2.0
+langchain-community>=0.3.0
 
 # DeepSeek 官方支持
 langchain-openai>=0.2.0
+
+# RAG 相关依赖
+chromadb>=0.5.0
+sentence-transformers>=2.0.0
+pypdf>=5.0.0
+
+# 版本约束：解决 NumPy 2.x 兼容性问题
+numpy<2.0
 
 # 数据库
 sqlalchemy>=2.0
