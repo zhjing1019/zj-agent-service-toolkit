@@ -1,3 +1,5 @@
+import re
+
 from core.llm import llm
 from core.prompts import PLANNER_PROMPT, SUMMARY_PROMPT
 
@@ -9,10 +11,12 @@ def planner_agent(task: str) -> str:
     prompt = PLANNER_PROMPT.format(task=task)
     res = llm.invoke(prompt)
     result = res.content.strip().lower()
-    # 暂时禁用 rag 路由，只支持 tool 和 chat
-    if result not in ["tool", "chat"]:
-        return "chat"
-    return result
+    if result in ("tool", "rag", "chat"):
+        return result
+    m = re.search(r"\b(tool|rag|chat)\b", result)
+    if m:
+        return m.group(1)
+    return "chat"
 
 def summary_agent(task: str, output: str) -> str:
     """汇总Agent：整理输出最终回答"""

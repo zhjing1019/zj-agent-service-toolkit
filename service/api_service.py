@@ -33,6 +33,15 @@ def api_reset_session(db: Session = Depends(get_db)):
 def api_switch_llm(provider: str = Query(..., description="支持 deepseek / openai")):
     return switch_llm_model(provider)
 
+
+@router.post("/admin/index-rag")
+def api_index_rag(rebuild: bool = Query(False, description="为 true 时清空 Chroma 目录后全量重建")):
+    """扫描 RAG_KNOWLEDGE_DIR（默认 ./knowledge）下 pdf/txt/md 写入向量库与 BM25。"""
+    from core.rag import load_knowledge_to_vector_incremental
+
+    load_knowledge_to_vector_incremental(rebuild=rebuild)
+    return {"code": 200, "msg": "ok", "data": {"rebuild": rebuild}}
+
 @router.post("/api/agent/run")
 def agent_run(request: TaskRequest):
     task = request.task

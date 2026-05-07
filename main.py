@@ -1,3 +1,5 @@
+import sys
+
 from db.init_db import init_database
 from service.cli import run_cli
 
@@ -5,4 +7,10 @@ from service.cli import run_cli
 init_database()
 
 if __name__ == "__main__":
-    run_cli()
+    if len(sys.argv) > 1 and sys.argv[1] == "--index-rag":
+        from core.rag import load_knowledge_to_vector_incremental
+
+        rebuild = "--rebuild" in sys.argv
+        load_knowledge_to_vector_incremental(rebuild=rebuild)
+    else:
+        run_cli()

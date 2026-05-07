@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import List, Dict
 from rank_bm25 import BM25Okapi
 from langchain_community.document_loaders import TextLoader, PyPDFLoader
@@ -33,32 +34,63 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 
 def load_file_docs(file_path: str):
-    """根据后缀自动加载 txt/md/pdf"""
-    if file_path.endswith((".txt", ".md")):
+    """根据后缀自动加载 txt/md/pdf（后缀不区分大小写）"""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in (".txt", ".md"):
         loader = TextLoader(file_path, encoding="utf-8")
-    elif file_path.endswith(".pdf"):
+    elif ext == ".pdf":
         loader = PyPDFLoader(file_path)
     else:
         return []
     return loader.load()
 
-def load_knowledge_to_vector_incremental():
-    """增量向量化 + 构建BM25索引"""
+
+def _iter_knowledge_files(know_dir: str) -> List[str]:
+    """递归收集 knowledge 目录下支持的文件路径。"""
+    paths: List[str] = []
+    if not os.path.isdir(know_dir):
+        return paths
+    for root, _dirs, files in os.walk(know_dir):
+        for fname in files:
+            if fname.startswith("."):
+                continue
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in (".pdf", ".txt", ".md"):
+                continue
+            paths.append(os.path.join(root, fname))
+    return sorted(paths)
+
+
+def load_knowledge_to_vector_incremental(rebuild: bool = False):
+    """扫描 knowledge 目录，向量化写入 Chroma，并构建 BM25 索引。
+
+    :param rebuild: True 时先清空本地 Chroma 目录再全量重建（适合更新 PDF 后避免重复块）。
+    """
     global all_chunks, bm25_model
-    know_dir = settings.RAG_KNOWLEDGE_DIR
+    know_dir = os.path.abspath(settings.RAG_KNOWLEDGE_DIR)
     os.makedirs(know_dir, exist_ok=True)
-    db_dir = settings.CHROMA_DB_DIR
+    db_dir = os.path.abspath(settings.CHROMA_DB_DIR)
     os.makedirs(db_dir, exist_ok=True)
 
+    if rebuild and os.path.isdir(db_dir):
+        shutil.rmtree(db_dir)
+        os.makedirs(db_dir, exist_ok=True)
+        all_chunks = []
+        bm25_model = None
+
     all_docs = []
-    for fname in os.listdir(know_dir):
-        fp = os.path.join(know_dir, fname)
-        if os.path.isfile(fp):
+    for fp in _iter_knowledge_files(know_dir):
+        try:
             docs = load_file_docs(fp)
-            all_docs.extend(docs)
+            if docs:
+                for d in docs:
+                    d.metadata = {**(d.metadata or {}), "source": fp}
+                all_docs.extend(docs)
+        except Exception as e:
+            print(f"⚠️ 跳过文件（读取失败）: {fp}\n   {e}")
 
     if not all_docs:
-        print("ℹ️ 暂无知识库文档")
+        print(f"ℹ️ 在目录中未找到可入库文件: {know_dir}\n   支持: .pdf .txt .md（含子目录）")
         return
 
     splits = text_splitter.split_documents(all_docs)
@@ -75,7 +107,8 @@ def load_knowledge_to_vector_incremental():
     # 2. 构建BM25索引
     tokenized_corpus = [chunk.split() for chunk in all_chunks]
     bm25_model = BM25Okapi(tokenized_corpus)
-    print("✅ 向量库 + BM25 索引构建完成")
+    n_sources = len({(d.metadata or {}).get("source", "") for d in all_docs})
+    print(f"✅ 向量库 + BM25 索引构建完成（共 {len(splits)} 条文本块，来自 {n_sources} 个源文件）")
 
 def bm25_retrieve(query: str, top_k: int = 3) -> List[str]:
     """BM25 关键词检索"""

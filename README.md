@@ -71,3 +71,9 @@ python3.11 main.py
 运行  python3 main.py
 运行接口  python3 -m service.api_service
 启动接口 uvicorn app:app --reload --host=0.0.0.0 --port=8000
+
+
+# 首次或追加写入（若之前已有 Chroma，可能产生重复块）
+python main.py --index-rag
+# 更新 PDF 后建议：先清空向量库再全量重建
+python main.py --index-rag --rebuild

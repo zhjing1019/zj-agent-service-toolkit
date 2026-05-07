@@ -53,7 +53,7 @@ class AgentGraph:
         workflow.add_conditional_edges(
             "security_check",
             lambda s: s["is_safe"],
-            {True: "llm_parse", False: END}
+            {True: "planner_agent", False: END},
         )
 
         # 规划Agent 条件分支路由
@@ -83,11 +83,7 @@ class AgentGraph:
 
         return workflow.compile()
 
-
-        # 编译工作流
-        return workflow.compile()
-    
-        # ======================
+    # ======================
     # 可视化方法
     # ======================
     def visualize(self):
@@ -115,7 +111,8 @@ class AgentGraph:
     
     # 3. RAG检索
     def rag_retrieve_node(self, state: AgentState):
-        context = query_knowledge_with_history(state["task"], state["history"])
+        history = state.get("history") or []
+        context = query_knowledge_with_history(state["task"], history)
         return {"rag_context": context}
         # return {"rag_context": ""}
 
