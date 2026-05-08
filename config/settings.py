@@ -39,6 +39,10 @@ class Settings:
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 512))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 60))
 
+    # RAG 指代消解：检索前用 LLM 将「它」等改写为独立问句（仅 RAG 检索节点使用）
+    RAG_COREFERENCE_ENABLE = os.getenv("RAG_COREFERENCE_ENABLE", "true").lower() in ("true", "1", "yes")
+    RAG_COREFERENCE_MAX_MESSAGES = int(os.getenv("RAG_COREFERENCE_MAX_MESSAGES", "12"))
+
     # 多模型配置
     DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "deepseek")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

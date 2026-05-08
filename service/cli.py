@@ -27,10 +27,17 @@ def run_cli():
         res = agent_graph.graph.invoke({
             "task": task,
             "is_safe": False,
+            "need_tool": False,
             "tool_name": "",
             "tool_params": [],
             "result": "",
-            "history": history
+            "history": history,
+            "rag_context": "",
+            "resolved_retrieval_query": "",
+            "sub_tasks": [],
+            "agent_type": "",
+            "task_output": "",
+            "final_summary": "",
         })
 
         agent_reply = res["result"]

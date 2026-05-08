@@ -84,7 +84,12 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
             "tool_params": [],
             "result": "",
             "history": history,
-            "rag_context": ""
+            "rag_context": "",
+            "resolved_retrieval_query": "",
+            "sub_tasks": [],
+            "agent_type": "",
+            "task_output": "",
+            "final_summary": "",
         })
 
         agent_reply = res["result"]

@@ -9,6 +9,7 @@ class AgentState(TypedDict):
     result: str
     history: List[Dict]
     rag_context: str    # 新增：知识库检索上下文
+    resolved_retrieval_query: str  # 指代消解后的检索问句（调试用，可与 task 不同）
     # 多Agent 新增字段
     sub_tasks: List[str]       # 拆解的子任务列表
     agent_type: str            # 路由类型：tool / rag / chat
