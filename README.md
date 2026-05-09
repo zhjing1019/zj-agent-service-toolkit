@@ -1,12 +1,27 @@
 # ZJ Agent Service Toolkit
+# zj-agent-service-toolkit
+轻量级、可扩展的Agent服务化工具包，聚焦「企业级Agent落地」场景，解决原生LLM/Agent框架在工程化、可复用性、多场景适配的痛点。
 
-**LangGraph 多 Agent 编排 · RAG 混合检索 · FastAPI + React 全栈对话**
+## 核心价值
+1. 开箱即用：封装Agent核心能力（任务拆解、工具调用、记忆管理、多轮对话），支持10分钟快速搭建生产级Agent服务；
+2. 多端适配：提供RESTful API/GRPC/CLI三种调用方式，兼容私有化部署/云原生部署；
+3. 可扩展：插件化设计，支持自定义LLM适配器（已适配OpenAI/智谱AI/通义千问）、自定义工具（比如数据库查询/文件解析）；
+4. 工程化：内置日志、监控、限流、重试机制，配套单元测试（覆盖率80%+）和Docker部署脚本。
 
-个人全栈项目：后端用 **LangGraph** 将「安全校验 → 规划路由 → 工具 / 知识库 / 闲聊 → 汇总」建模为状态机；前端 **React + TypeScript + Vite** 提供多轮会话、会话列表与 **SSE** 流式输出；数据层 **SQLite** 持久化会话，**Chroma + BM25** 做知识检索。适合作为简历/GitHub 首页的**可运行、可部署**作品仓库。
+## 核心功能
+- 基础Agent能力：任务规划、工具调用链、长短期记忆（基于Redis/向量库）；
+- 服务化封装：统一的Agent调度中心，支持多Agent协作（比如分工执行复杂任务）；
+- 适配层：屏蔽不同LLM厂商接口差异，一键切换模型；
+- 运维能力：Agent运行日志审计、性能监控面板、异常重试/降级。
 
----
+## 技术栈
+核心：Python 3.10、LangChain 0.1.0、FastAPI
+存储：Redis（缓存/记忆）、PostgreSQL（任务/日志存储）
+部署：Docker、Docker Compose
+测试：Pytest、Coverage
+监控：Prometheus + Grafana（可选）
 
-## 亮点（适合写在简历里的一句话）
+## 亮点
 
 - **编排**：LangGraph `StateGraph` + 条件分支，状态驱动多 Agent 流水线，非「单文件 if-else 大脚本」。
 - **RAG**：向量库（Chroma）+ 关键词（BM25）+ 指代消解改写检索问句；支持增量/重建索引。
