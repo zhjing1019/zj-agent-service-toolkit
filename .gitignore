@@ -19,3 +19,6 @@ data/
 .DS_Store
 tmp/
 temp/
+
+web/node_modules/
+web/dist/
