@@ -1,5 +1,25 @@
 const CHAT_STREAM_URL = "/api/agent/chat/stream";
 const CHAT_HISTORY_URL = "/api/agent/chat/history";
+const SESSIONS_URL = "/api/agent/sessions";
+
+export type SessionSummary = {
+  session_id: string;
+  updated_at: string | null;
+  msg_count: number;
+  preview: string;
+};
+
+export async function fetchSessionList(
+  limit = 80,
+): Promise<SessionSummary[]> {
+  const res = await fetch(`${SESSIONS_URL}?limit=${limit}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `拉取会话列表失败: ${res.status}`);
+  }
+  const j = (await res.json()) as { data?: SessionSummary[] };
+  return j.data ?? [];
+}
 
 export type HistoryRow = { role: string; content: string };
 
