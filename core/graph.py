@@ -36,9 +36,13 @@ class AgentGraph:
         workflow = StateGraph(AgentState)
 
         # ====================== 注册 4 个节点 ======================
+        # 安全检查节点
         workflow.add_node("security_check", self.security_check_node)
+        # DeepSeek 大模型解析意图
         workflow.add_node("llm_parse", self.llm_parse_node)
+        # 执行工具
         workflow.add_node("run_tool", self.run_tool_node)
+        # 直接回答
         workflow.add_node("direct_answer", self.direct_answer_node)
 
         # ========== 新增多Agent节点 ==========
