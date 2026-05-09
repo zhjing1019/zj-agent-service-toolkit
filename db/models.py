@@ -19,6 +19,20 @@ class TaskRecord(Base):
     result = Column(Text)
     create_time = Column(DateTime, default=datetime.now)
 
+
+class AgentTaskRun(Base):
+    """长任务元数据：与 LangGraph checkpoint 的 thread_id 对齐，便于列表与排障。"""
+    __tablename__ = "agent_task_run"
+    id = Column(Integer, primary_key=True)
+    checkpoint_thread_id = Column(String(64), unique=True, index=True)
+    session_id = Column(String(50), index=True, nullable=True)
+    status = Column(String(20), default="running")  # running | completed | failed
+    task_preview = Column(Text, nullable=True)
+    result_preview = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    create_time = Column(DateTime, default=datetime.now)
+    update_time = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
 class ApiLog(Base):
     __tablename__ = "api_log"
     id = Column(Integer, primary_key=True)

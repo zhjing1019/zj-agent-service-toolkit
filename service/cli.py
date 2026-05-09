@@ -1,6 +1,7 @@
 from core.graph import agent_graph
 from db.repository import chat_repo
 from db.base import get_db
+import uuid
 
 def run_cli():
     print("=" * 50)
@@ -23,6 +24,9 @@ def run_cli():
         # 读取历史记忆
         history = chat_repo.get_history(db, session_id)
 
+        # 每条 CLI 输入使用独立 checkpoint thread（与 HTTP 不传 id 时行为一致）
+        invoke_cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
         # 调用 LangGraph 工作流
         res = agent_graph.graph.invoke({
             "task": task,
@@ -38,7 +42,8 @@ def run_cli():
             "agent_type": "",
             "task_output": "",
             "final_summary": "",
-        })
+            "skip_summary_llm": False,
+        }, invoke_cfg)
 
         agent_reply = res["result"]
         print(f"Agent：{agent_reply}")

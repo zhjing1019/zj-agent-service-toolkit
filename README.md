@@ -26,7 +26,7 @@
 - **编排**：LangGraph `StateGraph` + 条件分支，状态驱动多 Agent 流水线，非「单文件 if-else 大脚本」。
 - **RAG**：向量库（Chroma）+ 关键词（BM25）+ 指代消解改写检索问句；支持增量/重建索引。
 - **工程化**：FastAPI 路由分层、Pydantic 校验、SlowAPI 限流、全局异常与日志；CLI 与 HTTP **共用同一套图与仓储**。
-- **前端**：会话列表、历史恢复、`sessionStorage` 与接口联动；对话 **SSE**（汇总阶段 `llm.stream`）。
+- **任务断点续跑**：完整 LangGraph 图挂载 **SqliteSaver** 检查点；`POST /chat` 可带 `checkpoint_thread_id`，异常中断后 `POST /task/resume` 从下一节点继续（非整图重跑）；元数据见表 `agent_task_run`。
 
 ---
 
@@ -40,7 +40,7 @@
 | 路由规划 | LLM 输出 `tool` / `rag` / `chat` 三分支 |
 | 工具链 | LangChain 意图 JSON + 可注册工具（计算、时间、文件等） |
 | 安全 | 入口节点输入校验 |
-| 运维接口 | 清会话、切换 LLM、RAG 索引等（见 `service/api_service.py`） |
+| 任务检查点 | `POST /chat` 支持 `checkpoint_thread_id`；`POST /task/resume` 续跑；`GET /task/status`、`GET /task/runs` 查询 |
 
 ---
 
@@ -48,7 +48,7 @@
 
 | 层级 | 技术 |
 |------|------|
-| 编排 & LLM | **LangGraph**, **LangChain**, `langchain-openai`（DeepSeek / OpenAI 兼容） |
+| 编排 & LLM | **LangGraph**, **LangChain**, `langchain-openai`；**langgraph-checkpoint-sqlite**（完整图检查点） |
 | Web 后端 | **FastAPI**, **Uvicorn**, **Pydantic v2**, **SlowAPI** |
 | 数据 | **SQLAlchemy 2**, **SQLite** |
 | RAG | **Chroma**, **sentence-transformers**, **rank-bm25**, **pypdf** |
@@ -187,6 +187,7 @@ python main.py --index-rag --rebuild
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | OpenAI 兼容通道 |
 | `DEFAULT_LLM_PROVIDER` | `deepseek` 或 `openai` |
 | `SQLITE_PATH` | SQLite 路径，默认 `./data/agent.db` |
+| `LANGGRAPH_CHECKPOINT_SQLITE_PATH` | LangGraph 检查点库，默认 `./data/langgraph_checkpoints.sqlite`（可与业务库同目录） |
 | `RAG_KNOWLEDGE_DIR` | 知识库目录，默认 `./knowledge` |
 | `CHROMA_DB_DIR` | Chroma 持久化目录 |
 
@@ -200,7 +201,10 @@ python main.py --index-rag --rebuild
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/chat` | 非流式对话，返回 JSON |
+| `POST` | `/chat` | 非流式对话；可选 body 字段 `checkpoint_thread_id`（与 LangGraph `thread_id` 一致）；响应带回该 id |
+| `POST` | `/task/resume` | body: `{ "checkpoint_thread_id" }`，从检查点 `invoke(None)` 续跑完整图 |
+| `GET` | `/task/status?checkpoint_thread_id=` | 查看下一待执行节点等 |
+| `GET` | `/task/runs?limit=&session_id=` | 任务运行记录（业务表） |
 | `POST` | `/chat/stream` | SSE 流式对话 |
 | `GET` | `/chat/history?session_id=` | 某会话全部消息 |
 | `GET` | `/sessions?limit=` | 会话列表（聚合） |

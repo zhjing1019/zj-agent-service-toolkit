@@ -16,6 +16,11 @@ class Settings:
 
     # DB
     SQLITE_PATH = os.getenv("SQLITE_PATH", "./data/agent.db")
+    # LangGraph 检查点（与业务库分离；用于完整图 invoke 断点续跑）
+    LANGGRAPH_CHECKPOINT_SQLITE_PATH = os.getenv(
+        "LANGGRAPH_CHECKPOINT_SQLITE_PATH",
+        "./data/langgraph_checkpoints.sqlite",
+    )
 
     # 安全
     SAFE_MODE = os.getenv("SAFE_MODE", "True") == "True"
@@ -53,5 +58,30 @@ class Settings:
     HYBRID_TOP_K = int(os.getenv("HYBRID_TOP_K", os.getenv("RAG_TOP_K", "3")))
     BM25_TOP_K = int(os.getenv("BM25_TOP_K", os.getenv("RAG_TOP_K", "3")))
     RERANK_ENABLE = os.getenv("RERANK_ENABLE", "false").lower() in ("true", "1", "yes")
+
+    # LLM 重试与降级（备用模型 / 人工接管提示）
+    LLM_RETRY_MAX = int(os.getenv("LLM_RETRY_MAX", "3"))
+    LLM_RETRY_BACKOFF_SEC = float(os.getenv("LLM_RETRY_BACKOFF_SEC", "0.6"))
+    LLM_FALLBACK_PROVIDER = os.getenv("LLM_FALLBACK_PROVIDER", "").strip()
+    LLM_FAILURE_DEGRADE_PREFIX = os.getenv("LLM_FAILURE_DEGRADE_PREFIX", "【系统降级】")
+    LLM_FAILURE_HANDOFF_MESSAGE = os.getenv(
+        "LLM_FAILURE_HANDOFF_MESSAGE",
+        "【系统降级】大模型多次调用仍失败（网络超时/额度或服务异常）。请稍后重试或联系人工处理。",
+    )
+
+    # 工具重试：核心工具多轮，其它工具少轮；失败后降级提示
+    TOOL_RETRY_CORE = int(os.getenv("TOOL_RETRY_CORE", "3"))
+    TOOL_RETRY_OTHER = int(os.getenv("TOOL_RETRY_OTHER", "1"))
+    _TOOL_CORE_NAMES_RAW = os.getenv(
+        "TOOL_CORE_NAMES",
+        "add,subtract,multiply,divide,get_now_time,get_now_date",
+    )
+    TOOL_CORE_NAMES_SET = frozenset(
+        n.strip() for n in _TOOL_CORE_NAMES_RAW.split(",") if n.strip()
+    )
+    TOOL_FAILURE_HANDOFF_MESSAGE = os.getenv(
+        "TOOL_FAILURE_HANDOFF_MESSAGE",
+        "【系统降级】工具多次执行仍失败。请检查参数或联系人工处理。",
+    )
 
 settings = Settings()

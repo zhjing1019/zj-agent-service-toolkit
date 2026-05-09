@@ -6,17 +6,21 @@
 #    ↓           /
 # 汇总输出Agent → 结束
 
-# 1. 导入依赖
+import time
+
 from langgraph.graph import StateGraph, END
+from config.settings import settings
 from core.state import AgentState
 from security.validator import security
 from core.intent_parser import parse_task_by_deepseek
 from toolkit.base_tool import TOOL_REGISTRY
-from core.llm import llm
+from core.llm import resilient_invoke
 from core.rag import query_knowledge
 from core.coreference import resolve_retrieval_query
-from core.multi_agent import planner_agent, summary_agent
+from core.multi_agent import planner_route, summary_agent
 from core.prompts import CHAT_AGENT_PROMPT, RAG_ANSWER_PROMPT, format_dialogue_history
+from core.checkpoint_store import get_graph_checkpointer
+from core.resilience import is_degraded_reply, is_retryable_tool_error
 # 可视化功能已内置在编译后的图对象中，无需额外导入
 
 # 2. 定义工作流类
@@ -46,10 +50,15 @@ class AgentGraph:
         workflow.add_node("direct_answer", self.direct_answer_node)
 
         # ========== 新增多Agent节点 ==========
+        # 规划Agent
         workflow.add_node("planner_agent", self.planner_agent_node)
+        # RAG问答Agent
         workflow.add_node("rag_answer_agent", self.rag_answer_node)
+        # 普通闲聊Agent
         workflow.add_node("chat_answer_agent", self.chat_answer_agent_node)
+        # 汇总输出Agent
         workflow.add_node("summary_agent", self.summary_agent_node)
+        # RAG检索节点
         workflow.add_node("rag_retrieve", self.rag_retrieve_node)
 
         # ====================== 设置入口 ======================
@@ -69,8 +78,9 @@ class AgentGraph:
             {
                 "tool": "llm_parse",
                 "rag": "rag_retrieve",
-                "chat": "chat_answer_agent"
-            }
+                "chat": "chat_answer_agent",
+                "degraded": "summary_agent",
+            },
         )
 
         # 工具链路
@@ -87,8 +97,10 @@ class AgentGraph:
         # 汇总结束
         workflow.add_edge("summary_agent", END)
 
-        self.graph = workflow.compile()
-        # 在汇总节点前暂停，供 HTTP SSE 用 llm.stream 流式输出最终回答
+        _cp = get_graph_checkpointer()
+        # 完整图：带 Sqlite 检查点，支持 invoke(None, config) 断点续跑
+        self.graph = workflow.compile(checkpointer=_cp)
+        # 流式路径：汇总在 HTTP 层 stream，不挂 checkpointer，避免与「图外 summary」状态不一致
         self.graph_pre_summary = workflow.compile(
             interrupt_before=["summary_agent"]
         )
@@ -118,8 +130,13 @@ class AgentGraph:
     # 2. 规划调度Agent
     def planner_agent_node(self, state: AgentState):
         hist = state.get("history") or []
-        agent_type = planner_agent(state["task"], hist)
-        return {"agent_type": agent_type}
+        route, handoff, skip = planner_route(state["task"], hist)
+        out: dict = {"agent_type": route}
+        if handoff is not None:
+            out["task_output"] = handoff
+        if skip:
+            out["skip_summary_llm"] = True
+        return out
     
     # 3. RAG检索
     def rag_retrieve_node(self, state: AgentState):
@@ -134,13 +151,22 @@ class AgentGraph:
     # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
     def llm_parse_node(self, state: AgentState):
         parsed = parse_task_by_deepseek(state["task"], state.get("history"))
-        
-        # 清理键名，移除可能的空格和换行符
+
         cleaned_parsed = {}
         for key, value in parsed.items():
             clean_key = key.strip().strip('"')
             cleaned_parsed[clean_key] = value
-        
+
+        if cleaned_parsed.get("__degraded__"):
+            msg = cleaned_parsed.get("__message__") or settings.LLM_FAILURE_HANDOFF_MESSAGE
+            return {
+                "need_tool": False,
+                "tool_name": "",
+                "tool_params": [],
+                "task_output": msg,
+                "skip_summary_llm": True,
+            }
+
         return {
             "need_tool": cleaned_parsed.get("need_tool", False),
             "tool_name": cleaned_parsed.get("tool_name"),
@@ -149,17 +175,39 @@ class AgentGraph:
 
     # ====================== 节点 3：执行工具 ======================
     def run_tool_node(self, state: AgentState):
+        if state.get("skip_summary_llm"):
+            return {}
+
         tool_name = state["tool_name"]
         params = state["tool_params"]
 
         if tool_name not in TOOL_REGISTRY:
             return {"task_output": "无法识别工具"}
 
-        try:
-            res = TOOL_REGISTRY[tool_name](*params)
-            return {"task_output": f"✅ 执行结果：{res}"}
-        except Exception as e:
-            return {"task_output": f"❌ 执行失败：{str(e)}"}
+        max_r = (
+            settings.TOOL_RETRY_CORE
+            if tool_name in settings.TOOL_CORE_NAMES_SET
+            else settings.TOOL_RETRY_OTHER
+        )
+        max_r = max(1, int(max_r))
+        last_err: BaseException | None = None
+        for attempt in range(max_r):
+            try:
+                res = TOOL_REGISTRY[tool_name](*params)
+                return {"task_output": f"✅ 执行结果：{res}"}
+            except Exception as e:
+                last_err = e
+                if attempt + 1 < max_r and is_retryable_tool_error(e):
+                    time.sleep(
+                        max(0.05, settings.LLM_RETRY_BACKOFF_SEC) * (attempt + 1)
+                    )
+                    continue
+                break
+
+        if last_err is not None and is_retryable_tool_error(last_err) and max_r > 1:
+            return {"task_output": settings.TOOL_FAILURE_HANDOFF_MESSAGE}
+        err_s = str(last_err) if last_err else "未知错误"
+        return {"task_output": f"❌ 执行失败：{err_s}"}
 
     # ====================== 节点 4：直接回答（不用工具） ======================
     # 6. RAG问答Agent
@@ -171,26 +219,38 @@ class AgentGraph:
         prompt = RAG_ANSWER_PROMPT.format(
             context=context, history=htext, task=task
         )
-        reply = llm.invoke(prompt)
-        return {"task_output": reply.content.strip()}
+        reply = resilient_invoke(prompt)
+        content = (reply.content or "").strip()
+        out: dict = {"task_output": content}
+        if is_degraded_reply(content):
+            out["skip_summary_llm"] = True
+        return out
 
     # 7. 普通闲聊Agent
     def chat_answer_agent_node(self, state: AgentState):
         hist = state.get("history") or []
         htext = format_dialogue_history(hist, max_messages=14)
         prompt = CHAT_AGENT_PROMPT.format(history=htext, task=state["task"])
-        reply = llm.invoke(prompt)
-        return {"task_output": reply.content.strip()}
+        reply = resilient_invoke(prompt)
+        content = (reply.content or "").strip()
+        out: dict = {"task_output": content}
+        if is_degraded_reply(content):
+            out["skip_summary_llm"] = True
+        return out
 
     # 8. 汇总输出Agent
     def summary_agent_node(self, state: AgentState):
+        to = (state.get("task_output") or "").strip()
+        if state.get("skip_summary_llm") or is_degraded_reply(to):
+            final = to if to else settings.LLM_FAILURE_HANDOFF_MESSAGE
+            return {"result": final}
         hist = state.get("history") or []
         final = summary_agent(state["task"], state["task_output"], hist)
         return {"result": final}
 
     def direct_answer_node(self, state: AgentState):
-        reply = llm.invoke(state["task"])
-        return {"result": reply.content}
+        reply = resilient_invoke(state["task"])
+        return {"result": (reply.content or "").strip()}
 
 # 全局单例，整个项目共用一个图
 agent_graph = AgentGraph()

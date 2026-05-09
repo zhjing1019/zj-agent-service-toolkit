@@ -1,5 +1,5 @@
 from .base import engine, Base
-from .models import ChatHistory, TaskRecord
+from .models import ChatHistory, TaskRecord, AgentTaskRun
 
 def init_database():
     Base.metadata.create_all(bind=engine)

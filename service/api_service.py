@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import uuid
 
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -10,8 +11,10 @@ from agent.base_agent import BaseAgent
 from sqlalchemy.orm import Session
 from core.graph import agent_graph
 from core.multi_agent import summary_agent_stream
+from config.settings import settings
 from db.base import get_db
 from db.repository import chat_repo
+from db.task_run_repo import task_run_repo
 from core.admin import reset_all_chat_session, switch_llm_model
 
 
@@ -19,6 +22,35 @@ from core.admin import reset_all_chat_session, switch_llm_model
 class AgentChatReq(BaseModel):
     session_id: str | None = None
     task: str
+    # 与 LangGraph SqliteSaver 的 thread_id 对齐；不传则每次新任务。仅对 POST /chat 生效。
+    checkpoint_thread_id: str | None = None
+
+class TaskResumeReq(BaseModel):
+    checkpoint_thread_id: str
+
+
+def _invoke_cfg(thread_id: str) -> dict:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def _assert_new_chat_invoke_allowed(thread_id: str) -> None:
+    """禁止在「已结束」或「停在断点」的 thread 上再次整图 /chat，避免状态串台。"""
+    snap = agent_graph.graph.get_state(_invoke_cfg(thread_id))
+    vals = snap.values or {}
+    if not vals:
+        return
+    nxt = tuple(snap.next) if snap.next is not None else ()
+    if not nxt and vals.get("result"):
+        raise HTTPException(
+            status_code=400,
+            detail="该 checkpoint_thread_id 已完成，请省略或更换后再调用 /chat",
+        )
+    if nxt:
+        raise HTTPException(
+            status_code=400,
+            detail="任务未跑完，请使用 POST /api/agent/task/resume 断点续跑",
+        )
+
 
 # 初始化FastAPI路由
 router = APIRouter(prefix="/api/agent", tags=["Agent对话"])
@@ -72,16 +104,17 @@ def agent_memory():
 
 @router.post("/chat")
 def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db)):
+    checkpoint_thread_id = (req.checkpoint_thread_id or "").strip() or str(
+        uuid.uuid4()
+    )
     try:
-        # 无会话ID自动生成
         if not req.session_id:
             req.session_id = chat_repo.gen_session_id()
 
-        # 读取历史会话
-        history = chat_repo.get_history(db, req.session_id)
+        _assert_new_chat_invoke_allowed(checkpoint_thread_id)
 
-        # 执行LangGraph工作流
-        res = agent_graph.graph.invoke({
+        history = chat_repo.get_history(db, req.session_id)
+        initial = {
             "task": req.task,
             "is_safe": False,
             "need_tool": False,
@@ -95,20 +128,31 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
             "agent_type": "",
             "task_output": "",
             "final_summary": "",
-        })
+            "skip_summary_llm": False,
+        }
+
+        task_run_repo.upsert_start(
+            db, checkpoint_thread_id, req.session_id, req.task or ""
+        )
+        cfg = _invoke_cfg(checkpoint_thread_id)
+        res = agent_graph.graph.invoke(initial, cfg)
 
         agent_reply = res["result"]
+        task_run_repo.mark_completed(db, checkpoint_thread_id, agent_reply)
 
-        # 保存聊天记录
         chat_repo.save_chat(db, req.session_id, "user", req.task)
         chat_repo.save_chat(db, req.session_id, "agent", agent_reply)
 
         return {
             "code": 200,
             "session_id": req.session_id,
-            "data": agent_reply
+            "checkpoint_thread_id": checkpoint_thread_id,
+            "data": agent_reply,
         }
+    except HTTPException:
+        raise
     except Exception as e:
+        task_run_repo.mark_failed(db, checkpoint_thread_id, str(e))
         raise e
 
 
@@ -132,13 +176,82 @@ def agent_chat_history(
     return {"code": 200, "session_id": session_id, "data": rows}
 
 
+@router.post("/task/resume")
+def agent_task_resume(body: TaskResumeReq, db: Session = Depends(get_db)):
+    """从 LangGraph 检查点继续执行完整图（invoke(None)）。适用于进程中断、人工暂停后续跑。"""
+    tid = body.checkpoint_thread_id.strip()
+    if not tid:
+        raise HTTPException(status_code=400, detail="checkpoint_thread_id 不能为空")
+    cfg = _invoke_cfg(tid)
+    snap = agent_graph.graph.get_state(cfg)
+    vals = snap.values or {}
+    nxt = tuple(snap.next) if snap.next is not None else ()
+    if not vals:
+        raise HTTPException(
+            status_code=404,
+            detail="未找到该 checkpoint_thread_id 的检查点，请先使用 POST /chat 且传入相同 id",
+        )
+    if not nxt:
+        return {
+            "code": 200,
+            "msg": "already_finished",
+            "checkpoint_thread_id": tid,
+            "data": dict(vals),
+        }
+    task_run_repo.upsert_start(db, tid, None, "[resume]")
+    try:
+        res = agent_graph.graph.invoke(None, cfg)
+        out = res.get("result", "")
+        task_run_repo.mark_completed(db, tid, str(out))
+        return {
+            "code": 200,
+            "msg": "ok",
+            "checkpoint_thread_id": tid,
+            "data": res,
+        }
+    except Exception as e:
+        task_run_repo.mark_failed(db, tid, str(e))
+        raise
+
+
+@router.get("/task/status")
+def agent_task_status(
+    checkpoint_thread_id: str = Query(..., min_length=1),
+):
+    """查看某 checkpoint_thread_id 在完整图中的下一待执行节点与状态键。"""
+    cfg = _invoke_cfg(checkpoint_thread_id)
+    snap = agent_graph.graph.get_state(cfg)
+    vals = snap.values or {}
+    nxt = list(snap.next) if snap.next is not None else []
+    return {
+        "code": 200,
+        "checkpoint_thread_id": checkpoint_thread_id,
+        "data": {
+            "next_nodes": nxt,
+            "has_result": bool(vals.get("result")),
+            "state_keys": list(vals.keys()),
+        },
+    }
+
+
+@router.get("/task/runs")
+def agent_task_runs_list(
+    limit: int = Query(30, ge=1, le=200),
+    session_id: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """任务运行记录列表（业务表 agent_task_run），便于与检查点 thread_id 对照。"""
+    rows = task_run_repo.list_runs(db, limit=limit, session_id=session_id)
+    return {"code": 200, "data": rows}
+
+
 def _sse_data(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
 @router.post("/chat/stream")
 async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
-    """SSE：图跑到汇总节点前暂停，再以 llm.stream 流式输出最终回复。"""
+    """SSE：图跑到汇总节点前暂停，再以带重试/降级的流式汇总输出最终回复。"""
 
     async def event_gen():
         try:
@@ -164,6 +277,7 @@ async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
                 "agent_type": "",
                 "task_output": "",
                 "final_summary": "",
+                "skip_summary_llm": False,
             }
 
             state = await asyncio.to_thread(
@@ -180,9 +294,14 @@ async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
             task_out = state.get("task_output") or ""
 
             full_parts: list[str] = []
-            for piece in summary_agent_stream(req.task, task_out, history):
-                full_parts.append(piece)
-                yield _sse_data({"event": "delta", "text": piece})
+            if state.get("skip_summary_llm"):
+                msg = task_out.strip() or settings.LLM_FAILURE_HANDOFF_MESSAGE
+                full_parts.append(msg)
+                yield _sse_data({"event": "delta", "text": msg})
+            else:
+                for piece in summary_agent_stream(req.task, task_out, history):
+                    full_parts.append(piece)
+                    yield _sse_data({"event": "delta", "text": piece})
 
             agent_reply = "".join(full_parts)
             chat_repo.save_chat(db, session_id, "user", req.task)

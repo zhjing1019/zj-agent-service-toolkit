@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import List, Dict
 
 from config.settings import settings
-from core.llm import llm
+from core.llm import resilient_invoke
+from core.resilience import is_degraded_reply
 
 COREFERENCE_PROMPT = """你是指代消解与问句改写助手。根据「对话历史」和「用户当前问句」，输出一条**可直接用于知识库检索**的完整问句。
 
@@ -50,8 +51,10 @@ def resolve_retrieval_query(task: str, history_list: List[Dict]) -> str:
     history_text = _format_history(history, settings.RAG_COREFERENCE_MAX_MESSAGES)
     prompt = COREFERENCE_PROMPT.format(history=history_text, task=task)
     try:
-        res = llm.invoke(prompt)
+        res = resilient_invoke(prompt)
         text = (res.content or "").strip()
+        if is_degraded_reply(text):
+            return task
         if not text:
             return task
         # 去掉偶发的引号包裹
