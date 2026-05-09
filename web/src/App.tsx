@@ -5,7 +5,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { sendChatMessage } from "./api/agent";
+import { streamChat } from "./api/agent";
 import styles from "./App.module.css";
 
 type Msg = { role: "user" | "agent"; text: string };
@@ -36,14 +36,37 @@ export default function App() {
 
     setError(null);
     setInput("");
-    setMessages((m) => [...m, { role: "user", text: task }]);
+    setMessages((m) => [
+      ...m,
+      { role: "user", text: task },
+      { role: "agent", text: "" },
+    ]);
     setLoading(true);
     scrollToBottom();
 
     try {
-      const res = await sendChatMessage(task, sessionId);
-      setSessionId(res.session_id);
-      setMessages((m) => [...m, { role: "agent", text: res.data }]);
+      await streamChat(task, sessionId, (ev) => {
+        if (ev.event === "session") {
+          setSessionId(ev.session_id);
+        }
+        if (ev.event === "delta") {
+          setMessages((m) => {
+            const next = [...m];
+            const last = next[next.length - 1];
+            if (last?.role === "agent") {
+              next[next.length - 1] = {
+                role: "agent",
+                text: last.text + ev.text,
+              };
+            }
+            return next;
+          });
+          scrollToBottom();
+        }
+        if (ev.event === "error") {
+          setError(ev.message);
+        }
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -63,7 +86,7 @@ export default function App() {
   return (
     <div className={styles.layout}>
       <header className={styles.header}>
-        <h1 className={styles.title}>Agent 对话</h1>
+        <h1 className={styles.title}>Agent 对话（SSE）</h1>
         <p className={styles.meta}>
           会话 ID：<span className={styles.mono}>{sidLabel}</span>
         </p>
@@ -73,7 +96,7 @@ export default function App() {
         <div ref={listRef} className={styles.messages} role="log">
           {messages.length === 0 && (
             <p className={styles.hint}>
-              向智能体提问，支持多轮会话（历史由后端 SQLite 持久化）。
+              流式输出最终汇总；规划 / 工具 / RAG 阶段仍会在后台完整执行后再开始打字。
             </p>
           )}
           {messages.map((msg, i) => (
@@ -86,10 +109,11 @@ export default function App() {
               <span className={styles.role}>
                 {msg.role === "user" ? "你" : "Agent"}
               </span>
-              <pre className={styles.text}>{msg.text}</pre>
+              <pre className={styles.text}>
+                {msg.text || (loading && i === messages.length - 1 ? "…" : "")}
+              </pre>
             </div>
           ))}
-          {loading && <div className={styles.pending}>思考中…</div>}
         </div>
 
         {error && <div className={styles.error}>{error}</div>}

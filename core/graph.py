@@ -82,7 +82,12 @@ class AgentGraph:
         # 汇总结束
         workflow.add_edge("summary_agent", END)
 
-        return workflow.compile()
+        self.graph = workflow.compile()
+        # 在汇总节点前暂停，供 HTTP SSE 用 llm.stream 流式输出最终回答
+        self.graph_pre_summary = workflow.compile(
+            interrupt_before=["summary_agent"]
+        )
+        return self.graph
 
     # ======================
     # 可视化方法

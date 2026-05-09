@@ -1,10 +1,15 @@
 # 升级成 HTTP 接口服务
 
+import asyncio
+import json
+
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from agent.base_agent import BaseAgent
 from sqlalchemy.orm import Session
 from core.graph import agent_graph
+from core.multi_agent import summary_agent_stream
 from db.base import get_db
 from db.repository import chat_repo
 from core.admin import reset_all_chat_session, switch_llm_model
@@ -105,3 +110,73 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
         }
     except Exception as e:
         raise e
+
+
+def _sse_data(obj: dict) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+@router.post("/chat/stream")
+async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
+    """SSE：图跑到汇总节点前暂停，再以 llm.stream 流式输出最终回复。"""
+
+    async def event_gen():
+        try:
+            if not (req.task or "").strip():
+                yield _sse_data({"event": "error", "message": "task不能为空"})
+                return
+
+            session_id = req.session_id or chat_repo.gen_session_id()
+            yield _sse_data({"event": "session", "session_id": session_id})
+
+            history = chat_repo.get_history(db, session_id)
+            initial = {
+                "task": req.task,
+                "is_safe": False,
+                "need_tool": False,
+                "tool_name": "",
+                "tool_params": [],
+                "result": "",
+                "history": history,
+                "rag_context": "",
+                "resolved_retrieval_query": "",
+                "sub_tasks": [],
+                "agent_type": "",
+                "task_output": "",
+                "final_summary": "",
+            }
+
+            state = await asyncio.to_thread(
+                agent_graph.graph_pre_summary.invoke,
+                initial,
+            )
+
+            if not state.get("is_safe", True):
+                yield _sse_data(
+                    {"event": "error", "message": "内容未通过安全校验"}
+                )
+                return
+
+            task_out = state.get("task_output") or ""
+
+            full_parts: list[str] = []
+            for piece in summary_agent_stream(req.task, task_out):
+                full_parts.append(piece)
+                yield _sse_data({"event": "delta", "text": piece})
+
+            agent_reply = "".join(full_parts)
+            chat_repo.save_chat(db, session_id, "user", req.task)
+            chat_repo.save_chat(db, session_id, "agent", agent_reply)
+            yield _sse_data({"event": "done"})
+        except Exception as e:
+            yield _sse_data({"event": "error", "message": str(e)})
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
