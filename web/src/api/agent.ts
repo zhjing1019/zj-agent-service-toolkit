@@ -1,4 +1,20 @@
 const CHAT_STREAM_URL = "/api/agent/chat/stream";
+const CHAT_HISTORY_URL = "/api/agent/chat/history";
+
+export type HistoryRow = { role: string; content: string };
+
+export async function fetchChatHistory(
+  sessionId: string,
+): Promise<HistoryRow[]> {
+  const q = new URLSearchParams({ session_id: sessionId });
+  const res = await fetch(`${CHAT_HISTORY_URL}?${q.toString()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `拉取历史失败: ${res.status}`);
+  }
+  const j = (await res.json()) as { data?: HistoryRow[] };
+  return j.data ?? [];
+}
 
 export type StreamEvent =
   | { event: "session"; session_id: string }

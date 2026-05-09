@@ -112,6 +112,26 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
         raise e
 
 
+@router.get("/sessions")
+def agent_session_list(
+    limit: int = Query(50, ge=1, le=200, description="返回最近若干条会话"),
+    db: Session = Depends(get_db),
+):
+    """会话列表：按最后一条消息时间倒序，含首条用户话预览。"""
+    items = chat_repo.list_sessions(db, limit=limit)
+    return {"code": 200, "data": items}
+
+
+@router.get("/chat/history")
+def agent_chat_history(
+    session_id: str = Query(..., min_length=1, description="会话 ID"),
+    db: Session = Depends(get_db),
+):
+    """拉取某会话全部消息，供前端刷新后恢复多轮界面。"""
+    rows = chat_repo.get_history(db, session_id)
+    return {"code": 200, "session_id": session_id, "data": rows}
+
+
 def _sse_data(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
@@ -160,7 +180,7 @@ async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
             task_out = state.get("task_output") or ""
 
             full_parts: list[str] = []
-            for piece in summary_agent_stream(req.task, task_out):
+            for piece in summary_agent_stream(req.task, task_out, history):
                 full_parts.append(piece)
                 yield _sse_data({"event": "delta", "text": piece})
 

@@ -16,6 +16,7 @@ from core.llm import llm
 from core.rag import query_knowledge
 from core.coreference import resolve_retrieval_query
 from core.multi_agent import planner_agent, summary_agent
+from core.prompts import CHAT_AGENT_PROMPT, RAG_ANSWER_PROMPT, format_dialogue_history
 # 可视化功能已内置在编译后的图对象中，无需额外导入
 
 # 2. 定义工作流类
@@ -112,7 +113,8 @@ class AgentGraph:
     
     # 2. 规划调度Agent
     def planner_agent_node(self, state: AgentState):
-        agent_type = planner_agent(state["task"])
+        hist = state.get("history") or []
+        agent_type = planner_agent(state["task"], hist)
         return {"agent_type": agent_type}
     
     # 3. RAG检索
@@ -127,7 +129,7 @@ class AgentGraph:
 
     # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
     def llm_parse_node(self, state: AgentState):
-        parsed = parse_task_by_deepseek(state["task"])
+        parsed = parse_task_by_deepseek(state["task"], state.get("history"))
         
         # 清理键名，移除可能的空格和换行符
         cleaned_parsed = {}
@@ -160,23 +162,26 @@ class AgentGraph:
     def rag_answer_node(self, state: AgentState):
         context = state.get("rag_context", "")
         task = state["task"]
-        prompt = f"""
-参考知识库内容：
-{context}
-用户问题：{task}
-请基于参考内容专业回答。
-"""
+        hist = state.get("history") or []
+        htext = format_dialogue_history(hist, max_messages=12)
+        prompt = RAG_ANSWER_PROMPT.format(
+            context=context, history=htext, task=task
+        )
         reply = llm.invoke(prompt)
         return {"task_output": reply.content.strip()}
 
     # 7. 普通闲聊Agent
     def chat_answer_agent_node(self, state: AgentState):
-        reply = llm.invoke(state["task"])
+        hist = state.get("history") or []
+        htext = format_dialogue_history(hist, max_messages=14)
+        prompt = CHAT_AGENT_PROMPT.format(history=htext, task=state["task"])
+        reply = llm.invoke(prompt)
         return {"task_output": reply.content.strip()}
 
     # 8. 汇总输出Agent
     def summary_agent_node(self, state: AgentState):
-        final = summary_agent(state["task"], state["task_output"])
+        hist = state.get("history") or []
+        final = summary_agent(state["task"], state["task_output"], hist)
         return {"result": final}
 
     def direct_answer_node(self, state: AgentState):

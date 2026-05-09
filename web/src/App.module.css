@@ -11,6 +11,34 @@
   margin-bottom: 1rem;
 }
 
+.headerRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.btnGhost {
+  flex-shrink: 0;
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+  background: transparent;
+  color: #c9d1d9;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btnGhost:hover:not(:disabled) {
+  background: #21262d;
+  border-color: #8b949e;
+}
+
+.btnGhost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .title {
   margin: 0 0 0.35rem;
   font-size: 1.35rem;
