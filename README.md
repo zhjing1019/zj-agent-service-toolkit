@@ -37,7 +37,7 @@
 | 对话 API | 多轮会话（`session_id` + SQLite `chat_history`）；提示词中注入历史 |
 | 流式 SSE | `POST /api/agent/chat/stream`，图在汇总前 `interrupt`，汇总用流式与前端打字机效果 |
 | 会话列表 | `GET /api/agent/sessions` 聚合展示；`GET /api/agent/chat/history` 按会话拉消息 |
-| 路由规划 | LLM 输出 `tool` / `rag` / `chat` 三分支 |
+| 路由规划 | LLM 输出 `tool` / `rag` / `chat` / `degraded`（规划失败降级直出） |
 | 工具链 | LangChain 意图 JSON + 可注册工具（计算、时间、文件等） |
 | 安全 | 入口节点输入校验 |
 | 任务检查点 | `POST /chat` 支持 `checkpoint_thread_id`；`POST /task/resume` 续跑；`GET /task/status`、`GET /task/runs` 查询 |
@@ -88,7 +88,7 @@ flowchart LR
   R --> SQL
 ```
 
-**工作流（与代码一致）**：`security_check` → `planner_agent` → `tool` / `rag` / `chat` 分支 → `summary_agent`（或 SSE 路径下在 HTTP 层流式汇总）。详见仓库内 `core/graph.py` 与 `agent_graph.png`（若本地生成成功）。
+**工作流（与代码一致）**：`security_check` → `planner_agent` → `tool` / `rag` / `chat` / **`degraded`** 分支 → `summary_agent`。其中 `tool`、`rag`、`chat` 各自走完子链路后进入汇总节点；**`degraded`** 为规划阶段大模型在配置的重试与备用提供商（`LLM_FALLBACK_PROVIDER`）仍失败后的降级路径：携带「系统降级」类文案直跳 `summary_agent`，并置 `skip_summary_llm`，不再二次调用汇总 LLM。SSE（`POST /chat/stream`）若已降级，则在 HTTP 层直接推送该文案。详见仓库内 `core/graph.py` 与 `agent_graph.png`（若本地生成成功）。
 
 ---
 
