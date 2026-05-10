@@ -6,12 +6,13 @@ import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from agent.base_agent import BaseAgent
 from sqlalchemy.orm import Session
 from config.logger import logger
 from config.settings import settings
+from core.agent_templates import create_template, delete_template, list_templates
 from core.graph import agent_graph
 from core.multi_agent import summary_agent_stream
 from core.task_timeout import (
@@ -20,15 +21,33 @@ from core.task_timeout import (
     invoke_langgraph_with_timeout,
 )
 from db.base import get_db
+from db.log_repo import log_repo
 from db.repository import chat_repo
 from db.task_run_repo import task_run_repo
 from core.admin import reset_all_chat_session, switch_llm_model
+from security.rbac import (
+    PERM_ADMIN_CONFIG,
+    PERM_GRAPH_VISUALIZE,
+    PERM_LOGS_READ,
+    PERM_TASK_EXECUTE,
+    PERM_TASK_OBSERVE,
+    PERM_TEMPLATES_READ,
+    PERM_TEMPLATES_WRITE,
+    Role,
+    attach_principal,
+    ensure_agent_allowed,
+    ensure_langgraph_chat,
+    get_principal,
+    require_perm,
+)
 
 
 
 class AgentChatReq(BaseModel):
     session_id: str | None = None
     task: str
+    # 与 LangGraph 对齐的 Agent：仅 default（SSE/多轮对话）；业务用户由 RBAC 白名单约束
+    agent_id: str | None = "default"
     # 与 LangGraph SqliteSaver 的 thread_id 对齐；不传则每次新任务。仅对 POST /chat 生效。
     checkpoint_thread_id: str | None = None
 
@@ -59,38 +78,68 @@ def _assert_new_chat_invoke_allowed(thread_id: str) -> None:
         )
 
 
-# 初始化FastAPI路由
-router = APIRouter(prefix="/api/agent", tags=["Agent对话"])
+# 初始化FastAPI路由（全链路挂载 RBAC 主体解析）
+router = APIRouter(
+    prefix="/api/agent",
+    tags=["Agent对话"],
+    dependencies=[Depends(attach_principal)],
+)
 # 初始化智能体
 agent = BaseAgent()
 
 class TaskRequest(BaseModel):
     task: str
+    agent_id: str | None = "base_tool"
+
+
+class AgentTemplateCreateReq(BaseModel):
+    id: str
+    name: str | None = None
+    description: str | None = None
+    agent_id: str = "default"
+
 
 # 运维：清空所有会话历史
 @router.post("/admin/reset-session")
-def api_reset_session(db: Session = Depends(get_db)):
+def api_reset_session(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_ADMIN_CONFIG)),
+):
     return reset_all_chat_session(db)
 
 # 运维：动态切换模型
 @router.post("/admin/switch-llm")
-def api_switch_llm(provider: str = Query(..., description="支持 deepseek / openai")):
+def api_switch_llm(
+    request: Request,
+    provider: str = Query(..., description="支持 deepseek / openai"),
+    _: None = Depends(require_perm(PERM_ADMIN_CONFIG)),
+):
     return switch_llm_model(provider)
 
 
 @router.post("/admin/index-rag")
-def api_index_rag(rebuild: bool = Query(False, description="为 true 时清空 Chroma 目录后全量重建")):
+def api_index_rag(
+    request: Request,
+    rebuild: bool = Query(False, description="为 true 时清空 Chroma 目录后全量重建"),
+    _: None = Depends(require_perm(PERM_ADMIN_CONFIG)),
+):
     """扫描 RAG_KNOWLEDGE_DIR（默认 ./knowledge）下 pdf/txt/md 写入向量库与 BM25。"""
     from core.rag import load_knowledge_to_vector_incremental
 
     load_knowledge_to_vector_incremental(rebuild=rebuild)
     return {"code": 200, "msg": "ok", "data": {"rebuild": rebuild}}
 
-@router.post("/api/agent/run")
-def agent_run(request: TaskRequest):
-    task = request.task
+@router.post("/run")
+def agent_run(
+    request: Request,
+    request_body: TaskRequest,
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+):
+    task = request_body.task
     if not task:
         raise HTTPException(status_code=400, detail="task不能为空")
+    ensure_agent_allowed(request, request_body.agent_id or "base_tool")
 
     result = agent.run(task)
     return {
@@ -100,8 +149,12 @@ def agent_run(request: TaskRequest):
     }
 
 # 接口：查看记忆
-@router.get("/api/agent/memory")
-def agent_memory():
+@router.get("/memory")
+def agent_memory(
+    request: Request,
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+):
+    ensure_agent_allowed(request, "base_tool")
     memory_list = agent.get_memory()
     return {
         "code": 200,
@@ -110,7 +163,13 @@ def agent_memory():
     }
 
 @router.post("/chat")
-def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db)):
+def agent_chat(
+    request: Request,
+    req: AgentChatReq,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+):
+    ensure_langgraph_chat(request, req.agent_id)
     checkpoint_thread_id = (req.checkpoint_thread_id or "").strip() or str(
         uuid.uuid4()
     )
@@ -173,8 +232,10 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
 
 @router.get("/sessions")
 def agent_session_list(
+    request: Request,
     limit: int = Query(50, ge=1, le=200, description="返回最近若干条会话"),
     db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_TASK_OBSERVE)),
 ):
     """会话列表：按最后一条消息时间倒序，含首条用户话预览。"""
     items = chat_repo.list_sessions(db, limit=limit)
@@ -183,8 +244,10 @@ def agent_session_list(
 
 @router.get("/chat/history")
 def agent_chat_history(
+    request: Request,
     session_id: str = Query(..., min_length=1, description="会话 ID"),
     db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_TASK_OBSERVE)),
 ):
     """拉取某会话全部消息，供前端刷新后恢复多轮界面。"""
     rows = chat_repo.get_history(db, session_id)
@@ -192,7 +255,13 @@ def agent_chat_history(
 
 
 @router.post("/task/resume")
-def agent_task_resume(body: TaskResumeReq, db: Session = Depends(get_db)):
+def agent_task_resume(
+    request: Request,
+    body: TaskResumeReq,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+):
+    ensure_agent_allowed(request, "default")
     """从 LangGraph 检查点继续执行完整图（invoke(None)）。适用于进程中断、人工暂停后续跑。"""
     tid = body.checkpoint_thread_id.strip()
     if not tid:
@@ -239,7 +308,9 @@ def agent_task_resume(body: TaskResumeReq, db: Session = Depends(get_db)):
 
 @router.get("/task/status")
 def agent_task_status(
+    request: Request,
     checkpoint_thread_id: str = Query(..., min_length=1),
+    _: None = Depends(require_perm(PERM_TASK_OBSERVE)),
 ):
     """查看某 checkpoint_thread_id 在完整图中的下一待执行节点与状态键。"""
     cfg = _invoke_cfg(checkpoint_thread_id)
@@ -259,13 +330,88 @@ def agent_task_status(
 
 @router.get("/task/runs")
 def agent_task_runs_list(
+    request: Request,
     limit: int = Query(30, ge=1, le=200),
     session_id: str | None = Query(None),
     db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_TASK_OBSERVE)),
 ):
     """任务运行记录列表（业务表 agent_task_run），便于与检查点 thread_id 对照。"""
     rows = task_run_repo.list_runs(db, limit=limit, session_id=session_id)
     return {"code": 200, "data": rows}
+
+
+@router.get("/templates")
+def list_agent_templates(
+    request: Request,
+    _: None = Depends(require_perm(PERM_TEMPLATES_READ)),
+):
+    rows = list_templates()
+    p = get_principal(request)
+    if p.role == Role.BUSINESS and p.agent_allowlist is not None:
+        rows = [r for r in rows if r.get("agent_id") in p.agent_allowlist]
+    return {"code": 200, "data": rows}
+
+
+@router.post("/templates")
+def create_agent_template(
+    body: AgentTemplateCreateReq,
+    _: None = Depends(require_perm(PERM_TEMPLATES_WRITE)),
+):
+    try:
+        row = create_template(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"code": 200, "data": row}
+
+
+@router.delete("/templates/{template_id}")
+def remove_agent_template(
+    template_id: str,
+    _: None = Depends(require_perm(PERM_TEMPLATES_WRITE)),
+):
+    try:
+        ok = delete_template(template_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not ok:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    return {"code": 200, "msg": "ok"}
+
+
+@router.get("/logs/api")
+def list_api_logs_route(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_LOGS_READ)),
+):
+    rows = log_repo.list_api_logs(db, limit=limit, offset=offset)
+    return {"code": 200, "data": rows}
+
+
+@router.get("/logs/errors")
+def list_error_logs_route(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_LOGS_READ)),
+):
+    rows = log_repo.list_error_logs(db, limit=limit, offset=offset)
+    return {"code": 200, "data": rows}
+
+
+@router.get("/visualize")
+def visualize_graph(_: None = Depends(require_perm(PERM_GRAPH_VISUALIZE))):
+    try:
+        img = agent_graph.graph.get_graph().draw_mermaid_png()
+        return Response(content=img, media_type="image/png")
+    except Exception as e:
+        return Response(
+            content=f"可视化失败: {str(e)}", media_type="text/plain", status_code=500
+        )
 
 
 def _sse_data(obj: dict) -> str:
@@ -273,8 +419,14 @@ def _sse_data(obj: dict) -> str:
 
 
 @router.post("/chat/stream")
-async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
+async def agent_chat_stream(
+    request: Request,
+    req: AgentChatReq,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+):
     """SSE：图跑到汇总节点前暂停，再以带重试/降级的流式汇总输出最终回复。"""
+    ensure_langgraph_chat(request, req.agent_id)
 
     async def event_gen():
         try:

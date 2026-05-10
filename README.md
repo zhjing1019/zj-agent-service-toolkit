@@ -190,8 +190,12 @@ python main.py --index-rag --rebuild
 | `LANGGRAPH_CHECKPOINT_SQLITE_PATH` | LangGraph 检查点库，默认 `./data/langgraph_checkpoints.sqlite`（可与业务库同目录） |
 | `RAG_KNOWLEDGE_DIR` | 知识库目录，默认 `./knowledge` |
 | `CHROMA_DB_DIR` | Chroma 持久化目录 |
+| `RBAC_ENABLED` | `true` 时除匿名健康检查外，上述 API 需携带有效 `X-API-Key`（或 `Authorization: Bearer`） |
+| `RBAC_ADMIN_API_KEYS` / `RBAC_DEVELOPER_API_KEYS` / `RBAC_BUSINESS_API_KEYS` | 逗号分隔的密钥，分别对应管理员 / 开发者 / 业务用户 |
+| `RBAC_BUSINESS_AGENT_IDS` | 业务用户允许执行的 `agent_id`（逗号分隔），默认 `default`（仅 LangGraph 对话） |
+| `AGENT_TEMPLATES_FILE` | 自定义模板 JSON 路径，默认 `./data/agent_templates.json` |
 
-其余 RAG、混合检索、嵌入缓存等见 `config/settings.py`。
+其余 RAG、混合检索、嵌入缓存、RBAC 细粒度说明见 `config/settings.py` 与 `security/rbac.py`。
 
 ---
 
@@ -201,16 +205,23 @@ python main.py --index-rag --rebuild
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/chat` | 非流式对话；可选 body 字段 `checkpoint_thread_id`（与 LangGraph `thread_id` 一致）；响应带回该 id |
+| `POST` | `/chat` | 非流式对话；可选 `agent_id`（仅 `default`）、`checkpoint_thread_id`；响应带回 id |
+| `POST` | `/run` | body: `task`、可选 `agent_id`（`base_tool` 为默认），走 BaseAgent 工具链 |
+| `GET` | `/memory` | BaseAgent 记忆列表 |
 | `POST` | `/task/resume` | body: `{ "checkpoint_thread_id" }`，从检查点 `invoke(None)` 续跑完整图 |
 | `GET` | `/task/status?checkpoint_thread_id=` | 查看下一待执行节点等 |
 | `GET` | `/task/runs?limit=&session_id=` | 任务运行记录（业务表） |
-| `POST` | `/chat/stream` | SSE 流式对话 |
+| `POST` | `/chat/stream` | SSE 流式对话（RBAC 开启时可用查询参数 `api_key`） |
 | `GET` | `/chat/history?session_id=` | 某会话全部消息 |
 | `GET` | `/sessions?limit=` | 会话列表（聚合） |
-| `GET` | `/api/agent/visualize` | LangGraph 工作流 PNG（定义在 `app.py`） |
+| `GET` | `/templates` | Agent 模板列表（业务用户仅能看到白名单内 `agent_id` 的模板） |
+| `POST` | `/templates` | 新建自定义模板（仅管理员） |
+| `DELETE` | `/templates/{template_id}` | 删除非内置模板（仅管理员） |
+| `GET` | `/logs/api?limit=&offset=` | API 调用日志（管理员 / 开发者） |
+| `GET` | `/logs/errors?limit=&offset=` | 错误日志（管理员 / 开发者） |
+| `GET` | `/visualize` | LangGraph 工作流 PNG（管理员 / 开发者） |
 
-运维类：`/admin/reset-session`、`/admin/switch-llm`、`/admin/index-rag` 等。
+运维类：`/admin/reset-session`、`/admin/switch-llm`、`/admin/index-rag`（**仅管理员**；需 `RBAC_ENABLED=true` 时携带 `X-API-Key`）。
 
 ---
 

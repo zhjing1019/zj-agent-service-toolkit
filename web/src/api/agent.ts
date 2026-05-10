@@ -2,6 +2,16 @@ const CHAT_STREAM_URL = "/api/agent/chat/stream";
 const CHAT_HISTORY_URL = "/api/agent/chat/history";
 const SESSIONS_URL = "/api/agent/sessions";
 
+const API_KEY = (import.meta.env.VITE_API_KEY as string | undefined)?.trim();
+
+function withAuth(headersInit?: HeadersInit): Headers {
+  const h = new Headers(headersInit);
+  if (API_KEY) {
+    h.set("X-API-Key", API_KEY);
+  }
+  return h;
+}
+
 export type SessionSummary = {
   session_id: string;
   updated_at: string | null;
@@ -12,7 +22,9 @@ export type SessionSummary = {
 export async function fetchSessionList(
   limit = 80,
 ): Promise<SessionSummary[]> {
-  const res = await fetch(`${SESSIONS_URL}?limit=${limit}`);
+  const res = await fetch(`${SESSIONS_URL}?limit=${limit}`, {
+    headers: withAuth(),
+  });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `拉取会话列表失败: ${res.status}`);
@@ -27,7 +39,9 @@ export async function fetchChatHistory(
   sessionId: string,
 ): Promise<HistoryRow[]> {
   const q = new URLSearchParams({ session_id: sessionId });
-  const res = await fetch(`${CHAT_HISTORY_URL}?${q.toString()}`);
+  const res = await fetch(`${CHAT_HISTORY_URL}?${q.toString()}`, {
+    headers: withAuth(),
+  });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `拉取历史失败: ${res.status}`);
@@ -63,10 +77,10 @@ export async function streamChat(
 ): Promise<void> {
   const res = await fetch(CHAT_STREAM_URL, {
     method: "POST",
-    headers: {
+    headers: withAuth({
       "Content-Type": "application/json",
       Accept: "text/event-stream",
-    },
+    }),
     body: JSON.stringify({
       task,
       session_id: sessionId || null,

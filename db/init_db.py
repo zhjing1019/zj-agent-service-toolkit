@@ -1,5 +1,5 @@
 from .base import engine, Base
-from .models import ChatHistory, TaskRecord, AgentTaskRun
+from .models import ChatHistory, TaskRecord, AgentTaskRun, ApiLog, ErrorLog
 
 def init_database():
     Base.metadata.create_all(bind=engine)

@@ -79,6 +79,19 @@ class Settings:
     TOOL_CORE_NAMES_SET = frozenset(
         n.strip() for n in _TOOL_CORE_NAMES_RAW.split(",") if n.strip()
     )
+    TOOL_FAILURE_HANDOFF_MESSAGE = os.getenv(
+        "TOOL_FAILURE_HANDOFF_MESSAGE",
+        "【系统降级】工具多次执行仍失败。请检查参数或联系人工处理。",
+    )
+
+    # RBAC（API Key → 角色；关闭 RBAC_ENABLED 时不校验，等价管理员）
+    RBAC_ENABLED = os.getenv("RBAC_ENABLED", "false").lower() in ("true", "1", "yes")
+    RBAC_ADMIN_API_KEYS = os.getenv("RBAC_ADMIN_API_KEYS", "")
+    RBAC_DEVELOPER_API_KEYS = os.getenv("RBAC_DEVELOPER_API_KEYS", "")
+    RBAC_BUSINESS_API_KEYS = os.getenv("RBAC_BUSINESS_API_KEYS", "")
+    RBAC_BUSINESS_AGENT_IDS = os.getenv("RBAC_BUSINESS_AGENT_IDS", "default")
+    AGENT_TEMPLATES_FILE = os.getenv("AGENT_TEMPLATES_FILE", "./data/agent_templates.json")
+
     # Agent 整图 / SSE 总时限（图执行 + SSE 流式汇总共享同一墙钟预算，<=0 表示不限制）
     AGENT_GRAPH_TIMEOUT_SEC = float(os.getenv("AGENT_GRAPH_TIMEOUT_SEC", "600"))
     # 单次工具同步调用墙钟上限（<=0 表示不限制）

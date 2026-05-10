@@ -16,6 +16,51 @@ class LogRepository:
         db.commit()
 
     @staticmethod
+    def list_api_logs(db: Session, limit: int = 50, offset: int = 0) -> list[dict]:
+        rows = (
+            db.query(ApiLog)
+            .order_by(ApiLog.create_time.desc())
+            .offset(max(0, offset))
+            .limit(min(200, max(1, limit)))
+            .all()
+        )
+        out = []
+        for r in rows:
+            out.append(
+                {
+                    "id": r.id,
+                    "session_id": r.session_id,
+                    "task": (r.task or "")[:2000],
+                    "response": (r.response or "")[:2000],
+                    "status": r.status,
+                    "ip": r.ip,
+                    "create_time": r.create_time.isoformat() if r.create_time else None,
+                }
+            )
+        return out
+
+    @staticmethod
+    def list_error_logs(db: Session, limit: int = 50, offset: int = 0) -> list[dict]:
+        rows = (
+            db.query(ErrorLog)
+            .order_by(ErrorLog.create_time.desc())
+            .offset(max(0, offset))
+            .limit(min(200, max(1, limit)))
+            .all()
+        )
+        out = []
+        for r in rows:
+            out.append(
+                {
+                    "id": r.id,
+                    "error_msg": (r.error_msg or "")[:4000],
+                    "traceback": (r.traceback or "")[:8000],
+                    "create_time": r.create_time.isoformat() if r.create_time else None,
+                }
+            )
+        return out
+
+    @staticmethod
     def save_error_log(db: Session, err: Exception):
         record = ErrorLog(
             error_msg=str(err),
