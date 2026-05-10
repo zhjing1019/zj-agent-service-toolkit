@@ -21,6 +21,7 @@ from core.multi_agent import planner_route, summary_agent
 from core.prompts import CHAT_AGENT_PROMPT, RAG_ANSWER_PROMPT, format_dialogue_history
 from core.checkpoint_store import get_graph_checkpointer
 from core.resilience import is_degraded_reply, is_retryable_tool_error
+from core.task_timeout import ToolExecutionTimeoutError, run_tool_call_with_timeout
 # 可视化功能已内置在编译后的图对象中，无需额外导入
 
 # 2. 定义工作流类
@@ -193,8 +194,20 @@ class AgentGraph:
         last_err: BaseException | None = None
         for attempt in range(max_r):
             try:
-                res = TOOL_REGISTRY[tool_name](*params)
+                res = run_tool_call_with_timeout(
+                    TOOL_REGISTRY[tool_name],
+                    tuple(params),
+                    settings.TOOL_CALL_TIMEOUT_SEC,
+                )
                 return {"task_output": f"✅ 执行结果：{res}"}
+            except ToolExecutionTimeoutError as e:
+                last_err = e
+                if attempt + 1 < max_r and is_retryable_tool_error(e):
+                    time.sleep(
+                        max(0.05, settings.LLM_RETRY_BACKOFF_SEC) * (attempt + 1)
+                    )
+                    continue
+                break
             except Exception as e:
                 last_err = e
                 if attempt + 1 < max_r and is_retryable_tool_error(e):

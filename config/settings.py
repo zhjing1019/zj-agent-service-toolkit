@@ -79,9 +79,9 @@ class Settings:
     TOOL_CORE_NAMES_SET = frozenset(
         n.strip() for n in _TOOL_CORE_NAMES_RAW.split(",") if n.strip()
     )
-    TOOL_FAILURE_HANDOFF_MESSAGE = os.getenv(
-        "TOOL_FAILURE_HANDOFF_MESSAGE",
-        "【系统降级】工具多次执行仍失败。请检查参数或联系人工处理。",
-    )
+    # Agent 整图 / SSE 总时限（图执行 + SSE 流式汇总共享同一墙钟预算，<=0 表示不限制）
+    AGENT_GRAPH_TIMEOUT_SEC = float(os.getenv("AGENT_GRAPH_TIMEOUT_SEC", "600"))
+    # 单次工具同步调用墙钟上限（<=0 表示不限制）
+    TOOL_CALL_TIMEOUT_SEC = float(os.getenv("TOOL_CALL_TIMEOUT_SEC", "30"))
 
 settings = Settings()

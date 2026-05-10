@@ -1,4 +1,6 @@
 from core.graph import agent_graph
+from config.settings import settings
+from core.task_timeout import AgentExecutionTimeoutError, invoke_langgraph_with_timeout
 from db.repository import chat_repo
 from db.base import get_db
 import uuid
@@ -27,8 +29,7 @@ def run_cli():
         # 每条 CLI 输入使用独立 checkpoint thread（与 HTTP 不传 id 时行为一致）
         invoke_cfg = {"configurable": {"thread_id": str(uuid.uuid4())}}
 
-        # 调用 LangGraph 工作流
-        res = agent_graph.graph.invoke({
+        initial = {
             "task": task,
             "is_safe": False,
             "need_tool": False,
@@ -43,7 +44,17 @@ def run_cli():
             "task_output": "",
             "final_summary": "",
             "skip_summary_llm": False,
-        }, invoke_cfg)
+        }
+        try:
+            res = invoke_langgraph_with_timeout(
+                agent_graph.graph,
+                initial,
+                invoke_cfg,
+                settings.AGENT_GRAPH_TIMEOUT_SEC,
+            )
+        except AgentExecutionTimeoutError as e:
+            print(str(e))
+            continue
 
         agent_reply = res["result"]
         print(f"Agent：{agent_reply}")

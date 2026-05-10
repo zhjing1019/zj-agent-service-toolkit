@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request, Depends, Query
@@ -9,9 +10,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from agent.base_agent import BaseAgent
 from sqlalchemy.orm import Session
+from config.logger import logger
+from config.settings import settings
 from core.graph import agent_graph
 from core.multi_agent import summary_agent_stream
-from config.settings import settings
+from core.task_timeout import (
+    AgentExecutionTimeoutError,
+    async_iterate_summary_stream,
+    invoke_langgraph_with_timeout,
+)
 from db.base import get_db
 from db.repository import chat_repo
 from db.task_run_repo import task_run_repo
@@ -135,7 +142,12 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
             db, checkpoint_thread_id, req.session_id, req.task or ""
         )
         cfg = _invoke_cfg(checkpoint_thread_id)
-        res = agent_graph.graph.invoke(initial, cfg)
+        res = invoke_langgraph_with_timeout(
+            agent_graph.graph,
+            initial,
+            cfg,
+            settings.AGENT_GRAPH_TIMEOUT_SEC,
+        )
 
         agent_reply = res["result"]
         task_run_repo.mark_completed(db, checkpoint_thread_id, agent_reply)
@@ -151,6 +163,9 @@ def agent_chat(request: Request, req: AgentChatReq, db: Session = Depends(get_db
         }
     except HTTPException:
         raise
+    except AgentExecutionTimeoutError as e:
+        task_run_repo.mark_failed(db, checkpoint_thread_id, str(e))
+        raise HTTPException(status_code=504, detail=str(e)) from e
     except Exception as e:
         task_run_repo.mark_failed(db, checkpoint_thread_id, str(e))
         raise e
@@ -200,7 +215,12 @@ def agent_task_resume(body: TaskResumeReq, db: Session = Depends(get_db)):
         }
     task_run_repo.upsert_start(db, tid, None, "[resume]")
     try:
-        res = agent_graph.graph.invoke(None, cfg)
+        res = invoke_langgraph_with_timeout(
+            agent_graph.graph,
+            None,
+            cfg,
+            settings.AGENT_GRAPH_TIMEOUT_SEC,
+        )
         out = res.get("result", "")
         task_run_repo.mark_completed(db, tid, str(out))
         return {
@@ -209,6 +229,9 @@ def agent_task_resume(body: TaskResumeReq, db: Session = Depends(get_db)):
             "checkpoint_thread_id": tid,
             "data": res,
         }
+    except AgentExecutionTimeoutError as e:
+        task_run_repo.mark_failed(db, tid, str(e))
+        raise HTTPException(status_code=504, detail=str(e)) from e
     except Exception as e:
         task_run_repo.mark_failed(db, tid, str(e))
         raise
@@ -262,6 +285,12 @@ async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
             session_id = req.session_id or chat_repo.gen_session_id()
             yield _sse_data({"event": "session", "session_id": session_id})
 
+            deadline = (
+                time.monotonic() + settings.AGENT_GRAPH_TIMEOUT_SEC
+                if settings.AGENT_GRAPH_TIMEOUT_SEC > 0
+                else None
+            )
+
             history = chat_repo.get_history(db, session_id)
             initial = {
                 "task": req.task,
@@ -280,10 +309,41 @@ async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
                 "skip_summary_llm": False,
             }
 
-            state = await asyncio.to_thread(
-                agent_graph.graph_pre_summary.invoke,
-                initial,
-            )
+            try:
+                if deadline is not None:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        yield _sse_data(
+                            {
+                                "event": "error",
+                                "message": f"【告警】任务总时限 {settings.AGENT_GRAPH_TIMEOUT_SEC:.0f}s 已用尽。",
+                            }
+                        )
+                        return
+                    state = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            agent_graph.graph_pre_summary.invoke,
+                            initial,
+                        ),
+                        timeout=max(0.01, left),
+                    )
+                else:
+                    state = await asyncio.to_thread(
+                        agent_graph.graph_pre_summary.invoke,
+                        initial,
+                    )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "【告警】SSE LangGraph 前置阶段超时：limit=%.0fs",
+                    settings.AGENT_GRAPH_TIMEOUT_SEC,
+                )
+                yield _sse_data(
+                    {
+                        "event": "error",
+                        "message": f"【告警】Agent 图执行已超过 {settings.AGENT_GRAPH_TIMEOUT_SEC:.0f} 秒，已终止等待。",
+                    }
+                )
+                return
 
             if not state.get("is_safe", True):
                 yield _sse_data(
@@ -299,9 +359,16 @@ async def agent_chat_stream(req: AgentChatReq, db: Session = Depends(get_db)):
                 full_parts.append(msg)
                 yield _sse_data({"event": "delta", "text": msg})
             else:
-                for piece in summary_agent_stream(req.task, task_out, history):
-                    full_parts.append(piece)
-                    yield _sse_data({"event": "delta", "text": piece})
+                try:
+                    async for piece in async_iterate_summary_stream(
+                        lambda: summary_agent_stream(req.task, task_out, history),
+                        deadline,
+                    ):
+                        full_parts.append(piece)
+                        yield _sse_data({"event": "delta", "text": piece})
+                except AgentExecutionTimeoutError as e:
+                    yield _sse_data({"event": "error", "message": str(e)})
+                    return
 
             agent_reply = "".join(full_parts)
             chat_repo.save_chat(db, session_id, "user", req.task)
