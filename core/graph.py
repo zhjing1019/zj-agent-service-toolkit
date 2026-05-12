@@ -16,6 +16,7 @@ from core.intent_parser import parse_task_by_deepseek
 from toolkit.base_tool import TOOL_REGISTRY
 from core.llm import resilient_invoke
 from core.rag import query_knowledge
+from core.rag_images import retrieve_image_rag_context
 from core.coreference import resolve_retrieval_query
 from core.multi_agent import planner_route, summary_agent
 from core.prompts import CHAT_AGENT_PROMPT, RAG_ANSWER_PROMPT, format_dialogue_history
@@ -144,10 +145,24 @@ class AgentGraph:
         history = state.get("history") or []
         task = state["task"]
         resolved = resolve_retrieval_query(task, history)
-        # 用独立问句检索，避免把整段历史拼进向量/BM25 导致噪声
-        context = query_knowledge(resolved)
+        text_ctx = query_knowledge(resolved)
+        img_ctx = retrieve_image_rag_context(resolved)
+        if img_ctx:
+            sep = "\n\n---\n\n"
+            room = settings.RAG_MAX_CONTEXT_LEN - len(img_ctx) - len(sep)
+            min_text = 320
+            if room < min_text:
+                room = min_text
+            if len(text_ctx) > room:
+                text_ctx = (
+                    text_ctx[:room] + "\n...（为保留图片检索已截断文本知识片段）"
+                )
+            context = text_ctx + sep + img_ctx
+        else:
+            context = text_ctx
+        if len(context) > settings.RAG_MAX_CONTEXT_LEN:
+            context = context[: settings.RAG_MAX_CONTEXT_LEN] + "\n...（内容截断）"
         return {"rag_context": context, "resolved_retrieval_query": resolved}
-        # return {"rag_context": ""}
 
     # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
     def llm_parse_node(self, state: AgentState):

@@ -24,7 +24,7 @@
 ## 亮点
 
 - **编排**：LangGraph `StateGraph` + 条件分支，状态驱动多 Agent 流水线，非「单文件 if-else 大脚本」。
-- **RAG**：向量库（Chroma）+ 关键词（BM25）+ 指代消解改写检索问句；支持增量/重建索引。
+- **RAG**：向量库（Chroma）+ 关键词（BM25）+ 指代消解改写检索问句；**知识库图片**：CLIP 图文向量检索 + 可选 BLIP 或 `图片文件名.caption.txt` 侧写描述；支持增量/重建索引。
 - **工程化**：FastAPI 路由分层、Pydantic 校验、SlowAPI 限流、全局异常与日志；CLI 与 HTTP **共用同一套图与仓储**。
 - **任务断点续跑**：完整 LangGraph 图挂载 **SqliteSaver** 检查点；`POST /chat` 可带 `checkpoint_thread_id`，异常中断后 `POST /task/resume` 从下一节点继续（非整图重跑）；元数据见表 `agent_task_run`。
 
@@ -38,6 +38,7 @@
 | 流式 SSE | `POST /api/agent/chat/stream`，图在汇总前 `interrupt`，汇总用流式与前端打字机效果 |
 | 会话列表 | `GET /api/agent/sessions` 聚合展示；`GET /api/agent/chat/history` 按会话拉消息 |
 | 路由规划 | LLM 输出 `tool` / `rag` / `chat` / `degraded`（规划失败降级直出） |
+| RAG / 图片 | 文本：Chroma + BM25 + 指代消解；**图片**：`knowledge/` 下常见图片格式，索引时 CLIP 编码，RAG 节点按问句检索并拼入上下文；可选 BLIP 或 `.caption.txt` |
 | 工具链 | LangChain 意图 JSON + 可注册工具（计算、时间、文件等） |
 | 安全 | 入口节点输入校验 |
 | 任务检查点 | `POST /chat` 支持 `checkpoint_thread_id`；`POST /task/resume` 续跑；`GET /task/status`、`GET /task/runs` 查询 |
@@ -171,9 +172,11 @@ cd web && npm run build
 
 ### 3. RAG 索引（可选）
 
+将 `pdf` / `txt` / `md` 与 **`knowledge/` 下的图片**（默认 `.png/.jpg/.jpeg/.webp/.gif/.bmp`）一并索引：文本进 Chroma + BM25；图片用 **CLIP** 写入 `./data/image_rag_manifest.json` 与 `image_rag_embeddings.npy`。图片描述可选：`IMAGE_RAG_BLIP_CAPTION=true` 且已安装 `transformers`，或在图片旁放置 **`同名.caption.txt`**（例如 `logo.png` + `logo.png.caption.txt`）。
+
 ```bash
 python main.py --index-rag
-# 全量重建（会按实现清空向量目录后重建）
+# 全量重建（会按实现清空向量目录后重建；图片索引亦按 rebuild 清空后重写）
 python main.py --index-rag --rebuild
 ```
 
@@ -190,6 +193,8 @@ python main.py --index-rag --rebuild
 | `LANGGRAPH_CHECKPOINT_SQLITE_PATH` | LangGraph 检查点库，默认 `./data/langgraph_checkpoints.sqlite`（可与业务库同目录） |
 | `RAG_KNOWLEDGE_DIR` | 知识库目录，默认 `./knowledge` |
 | `CHROMA_DB_DIR` | Chroma 持久化目录 |
+| `IMAGE_RAG_ENABLE` / `IMAGE_RAG_INDEX_DIR` / `IMAGE_RAG_CLIP_MODEL` / `IMAGE_RAG_TOP_K` | 知识库图片 CLIP 检索；索引目录默认 `./data`；模型默认 `clip-ViT-B-32` |
+| `IMAGE_RAG_BLIP_CAPTION` | `true` 时索引阶段用 BLIP 生成描述（需 `pip install transformers`） |
 | `RBAC_ENABLED` | `true` 时除匿名健康检查外，上述 API 需携带有效 `X-API-Key`（或 `Authorization: Bearer`） |
 | `RBAC_ADMIN_API_KEYS` / `RBAC_DEVELOPER_API_KEYS` / `RBAC_BUSINESS_API_KEYS` | 逗号分隔的密钥，分别对应管理员 / 开发者 / 业务用户 |
 | `RBAC_BUSINESS_AGENT_IDS` | 业务用户允许执行的 `agent_id`（逗号分隔），默认 `default`（仅 LangGraph 对话） |

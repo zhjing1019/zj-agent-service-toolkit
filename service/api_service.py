@@ -124,7 +124,7 @@ def api_index_rag(
     rebuild: bool = Query(False, description="为 true 时清空 Chroma 目录后全量重建"),
     _: None = Depends(require_perm(PERM_ADMIN_CONFIG)),
 ):
-    """扫描 RAG_KNOWLEDGE_DIR（默认 ./knowledge）下 pdf/txt/md 写入向量库与 BM25。"""
+    """扫描 RAG_KNOWLEDGE_DIR（默认 ./knowledge）下 pdf/txt/md 写入向量库与 BM25，并重建图片 CLIP 索引。"""
     from core.rag import load_knowledge_to_vector_incremental
 
     load_knowledge_to_vector_incremental(rebuild=rebuild)

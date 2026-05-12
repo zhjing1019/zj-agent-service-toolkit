@@ -59,6 +59,26 @@ class Settings:
     BM25_TOP_K = int(os.getenv("BM25_TOP_K", os.getenv("RAG_TOP_K", "3")))
     RERANK_ENABLE = os.getenv("RERANK_ENABLE", "false").lower() in ("true", "1", "yes")
 
+    # 知识库图片：CLIP 索引与检索（与文本 RAG 共用 RAG_KNOWLEDGE_DIR）
+    IMAGE_RAG_ENABLE = os.getenv("IMAGE_RAG_ENABLE", "true").lower() in ("true", "1", "yes")
+    IMAGE_RAG_INDEX_DIR = os.getenv("IMAGE_RAG_INDEX_DIR", "./data")
+    IMAGE_RAG_CLIP_MODEL = os.getenv("IMAGE_RAG_CLIP_MODEL", "clip-ViT-B-32")
+    IMAGE_RAG_TOP_K = int(os.getenv("IMAGE_RAG_TOP_K", "3"))
+    IMAGE_RAG_EXTENSIONS = os.getenv(
+        "IMAGE_RAG_EXTENSIONS", ".png,.jpg,.jpeg,.webp,.gif,.bmp"
+    )
+    IMAGE_RAG_MAX_CONTEXT_CHARS = int(os.getenv("IMAGE_RAG_MAX_CONTEXT_CHARS", "1200"))
+    # 索引时可选：需 pip install transformers（体积较大）；也可用「图片同目录 .caption.txt」侧写描述
+    IMAGE_RAG_BLIP_CAPTION = os.getenv("IMAGE_RAG_BLIP_CAPTION", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    IMAGE_RAG_BLIP_MODEL = os.getenv(
+        "IMAGE_RAG_BLIP_MODEL", "Salesforce/blip-image-captioning-base"
+    )
+    IMAGE_RAG_BLIP_MAX_LENGTH = int(os.getenv("IMAGE_RAG_BLIP_MAX_LENGTH", "48"))
+
     # LLM 重试与降级（备用模型 / 人工接管提示）
     LLM_RETRY_MAX = int(os.getenv("LLM_RETRY_MAX", "3"))
     LLM_RETRY_BACKOFF_SEC = float(os.getenv("LLM_RETRY_BACKOFF_SEC", "0.6"))

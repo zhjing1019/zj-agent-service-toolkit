@@ -14,6 +14,7 @@ chromadb>=0.5.0
 sentence-transformers>=2.0.0
 pypdf>=5.0.0
 rank-bm25>=0.2.2
+Pillow>=10.0.0
 
 # 版本约束：解决 NumPy 2.x 兼容性问题
 numpy<2.0

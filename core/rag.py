@@ -62,7 +62,7 @@ def _iter_knowledge_files(know_dir: str) -> List[str]:
 
 
 def load_knowledge_to_vector_incremental(rebuild: bool = False):
-    """扫描 knowledge 目录，向量化写入 Chroma，并构建 BM25 索引。
+    """扫描 knowledge 目录：pdf/txt/md 写入 Chroma + BM25；图片走 CLIP 索引（见 core/rag_images）。
 
     :param rebuild: True 时先清空本地 Chroma 目录再全量重建（适合更新 PDF 后避免重复块）。
     """
@@ -90,25 +90,32 @@ def load_knowledge_to_vector_incremental(rebuild: bool = False):
             print(f"⚠️ 跳过文件（读取失败）: {fp}\n   {e}")
 
     if not all_docs:
-        print(f"ℹ️ 在目录中未找到可入库文件: {know_dir}\n   支持: .pdf .txt .md（含子目录）")
-        return
+        print(
+            f"ℹ️ 在目录中未找到可入库文本: {know_dir}\n"
+            f"   支持: .pdf .txt .md（含子目录）；图片单独见图片 RAG 索引日志"
+        )
+        all_chunks = []
+        bm25_model = None
+    else:
+        splits = text_splitter.split_documents(all_docs)
+        all_chunks = [d.page_content.strip() for d in splits]
 
-    splits = text_splitter.split_documents(all_docs)
-    # 保存文本块给BM25
-    all_chunks = [d.page_content.strip() for d in splits]
+        Chroma.from_documents(
+            documents=splits,
+            embedding=embedding,
+            persist_directory=db_dir,
+        )
 
-    # 1. 向量库入库
-    Chroma.from_documents(
-        documents=splits,
-        embedding=embedding,
-        persist_directory=db_dir
-    )
+        tokenized_corpus = [chunk.split() for chunk in all_chunks]
+        bm25_model = BM25Okapi(tokenized_corpus)
+        n_sources = len({(d.metadata or {}).get("source", "") for d in all_docs})
+        print(
+            f"✅ 向量库 + BM25 索引构建完成（共 {len(splits)} 条文本块，来自 {n_sources} 个源文件）"
+        )
 
-    # 2. 构建BM25索引
-    tokenized_corpus = [chunk.split() for chunk in all_chunks]
-    bm25_model = BM25Okapi(tokenized_corpus)
-    n_sources = len({(d.metadata or {}).get("source", "") for d in all_docs})
-    print(f"✅ 向量库 + BM25 索引构建完成（共 {len(splits)} 条文本块，来自 {n_sources} 个源文件）")
+    from core.rag_images import build_image_rag_index
+
+    build_image_rag_index(rebuild=rebuild)
 
 def bm25_retrieve(query: str, top_k: int = 3) -> List[str]:
     """BM25 关键词检索"""
@@ -164,9 +171,18 @@ def query_knowledge(question: str) -> str:
 
 
 def query_knowledge_with_history(question: str, history_list: List[Dict]) -> str:
-    """拼接历史对话 + 当前问题，再做 RAG（混合或向量）。"""
+    """拼接历史对话 + 当前问题，再做 RAG（混合或向量）；并附加图片 CLIP 检索块。"""
     history_text = ""
     for item in history_list[-6:]:
         history_text += f"{item['role']}：{item['content']}\n"
     full_query = f"对话历史：\n{history_text}\n当前问题：{question}"
-    return query_knowledge(full_query)
+    text = query_knowledge(full_query)
+    from core.rag_images import retrieve_image_rag_context
+
+    img = retrieve_image_rag_context((question or "").strip())
+    if not img:
+        return text
+    merged = text + "\n\n---\n\n" + img
+    if len(merged) > settings.RAG_MAX_CONTEXT_LEN:
+        merged = merged[: settings.RAG_MAX_CONTEXT_LEN] + "\n...（内容截断）"
+    return merged
