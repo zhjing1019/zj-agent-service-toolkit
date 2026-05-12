@@ -10,21 +10,35 @@ import {
   fetchChatHistory,
   fetchSessionList,
   streamChat,
+  uploadChatImage,
+  withApiKey,
+  type HistoryRow,
+  type ReferencedImage,
   type SessionSummary,
 } from "./api/agent";
 import styles from "./App.module.css";
 
 const SESSION_STORAGE_KEY = "zj-agent-session-id";
 
-type Msg = { role: "user" | "agent"; text: string };
+type Msg = {
+  role: "user" | "agent";
+  text: string;
+  uploadImageIds?: string[];
+  referencedImages?: ReferencedImage[];
+};
 
-function rowsToMessages(
-  rows: { role: string; content: string }[],
-): Msg[] {
+function rowsToMessages(rows: HistoryRow[]): Msg[] {
   return rows.map((r) => ({
     role: r.role === "user" ? "user" : "agent",
     text: r.content ?? "",
+    uploadImageIds: r.attachments?.upload_image_ids,
+    referencedImages: r.attachments?.referenced_images,
   }));
+}
+
+function chatUploadImgSrc(imageId: string): string {
+  const q = new URLSearchParams({ image_id: imageId });
+  return withApiKey(`/api/agent/chat-upload?${q.toString()}`);
 }
 
 function formatSessionTime(iso: string | null): string {
@@ -43,12 +57,14 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [hydrating, setHydrating] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const sidLabel = useMemo(
     () => sessionId ?? "（新对话在首次发送后创建）",
@@ -105,6 +121,7 @@ export default function App() {
     setMessages([]);
     setError(null);
     setInput("");
+    setPendingFiles([]);
   }, [loading, loadingSession]);
 
   const openSession = useCallback(
@@ -128,18 +145,54 @@ export default function App() {
     [loading, sessionId, scrollToBottom],
   );
 
+  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (!files.length) return;
+    setPendingFiles((prev) => [...prev, ...files].slice(0, 4));
+    e.target.value = "";
+  };
+
+  const removePending = (idx: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   const onSend = useCallback(async () => {
     const task = input.trim();
-    if (!task || loading || loadingSession) return;
+    const files = [...pendingFiles];
+    if ((!task && !files.length) || loading || loadingSession) return;
 
     setError(null);
     setInput("");
+    setPendingFiles([]);
+    setLoading(true);
+    scrollToBottom();
+
+    let imageIds: string[] = [];
+    try {
+      for (const f of files) {
+        imageIds.push(await uploadChatImage(f));
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      setLoading(false);
+      setPendingFiles(files);
+      if (task) setInput(task);
+      return;
+    }
+
+    const userText = task || (imageIds.length ? "（仅附图）" : "");
     setMessages((m) => [
       ...m,
-      { role: "user", text: task },
+      {
+        role: "user",
+        text: userText,
+        uploadImageIds: imageIds.length ? imageIds : undefined,
+      },
       { role: "agent", text: "" },
     ]);
-    setLoading(true);
     scrollToBottom();
 
     try {
@@ -147,6 +200,21 @@ export default function App() {
         if (ev.event === "session") {
           setSessionId(ev.session_id);
           sessionStorage.setItem(SESSION_STORAGE_KEY, ev.session_id);
+        }
+        if (ev.event === "refs") {
+          setMessages((m) => {
+            const next = [...m];
+            const last = next[next.length - 1];
+            if (last?.role === "agent") {
+              next[next.length - 1] = {
+                role: "agent",
+                text: last.text,
+                referencedImages: ev.referenced_images,
+              };
+            }
+            return next;
+          });
+          scrollToBottom();
         }
         if (ev.event === "delta") {
           setMessages((m) => {
@@ -156,6 +224,7 @@ export default function App() {
               next[next.length - 1] = {
                 role: "agent",
                 text: last.text + ev.text,
+                referencedImages: last.referencedImages,
               };
             }
             return next;
@@ -165,7 +234,7 @@ export default function App() {
         if (ev.event === "error") {
           setError(ev.message);
         }
-      });
+      }, { imageIds: imageIds.length ? imageIds : undefined });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -178,6 +247,7 @@ export default function App() {
     input,
     loading,
     loadingSession,
+    pendingFiles,
     sessionId,
     scrollToBottom,
     refreshSessions,
@@ -191,6 +261,8 @@ export default function App() {
   };
 
   const busy = loading || loadingSession;
+  const canSend =
+    !busy && !hydrating && (!!input.trim() || pendingFiles.length > 0);
 
   return (
     <div className={styles.shell}>
@@ -264,7 +336,8 @@ export default function App() {
               !loadingSession &&
               messages.length === 0 && (
                 <p className={styles.hint}>
-                  从左侧选择会话，或输入消息后发送。左侧列表实时反映服务端全部会话。
+                  从左侧选择会话，或输入消息后发送。支持附加图片（CLIP
+                  与知识库图片联合检索）。左侧列表实时反映服务端全部会话。
                 </p>
               )}
             {messages.map((msg, i) => (
@@ -277,6 +350,48 @@ export default function App() {
                 <span className={styles.role}>
                   {msg.role === "user" ? "你" : "Agent"}
                 </span>
+                {msg.uploadImageIds && msg.uploadImageIds.length > 0 && (
+                  <div className={styles.thumbRow}>
+                    {msg.uploadImageIds.map((id) => (
+                      <a
+                        key={id}
+                        href={chatUploadImgSrc(id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={styles.thumbLink}
+                      >
+                        <img
+                          className={styles.thumbImg}
+                          src={chatUploadImgSrc(id)}
+                          alt="上传附图"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+                {msg.referencedImages && msg.referencedImages.length > 0 && (
+                  <div className={styles.refBlock}>
+                    <span className={styles.refLabel}>知识库命中图片</span>
+                    <div className={styles.thumbRow}>
+                      {msg.referencedImages.map((r) => (
+                        <a
+                          key={r.rel + r.score}
+                          href={withApiKey(r.url)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={styles.thumbLink}
+                          title={r.caption || r.rel}
+                        >
+                          <img
+                            className={styles.thumbImg}
+                            src={withApiKey(r.url)}
+                            alt={r.rel}
+                          />
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <pre className={styles.text}>
                   {msg.text ||
                     (loading && i === messages.length - 1 ? "…" : "")}
@@ -288,23 +403,61 @@ export default function App() {
           {error && <div className={styles.error}>{error}</div>}
 
           <div className={styles.composer}>
-            <textarea
-              className={styles.input}
-              rows={3}
-              placeholder="输入问题，Enter 发送，Shift+Enter 换行"
-              value={input}
-              disabled={busy || hydrating}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={onKeyDown}
-            />
-            <button
-              type="button"
-              className={styles.send}
-              disabled={busy || hydrating || !input.trim()}
-              onClick={() => void onSend()}
-            >
-              发送
-            </button>
+            <div className={styles.composerMain}>
+              {pendingFiles.length > 0 && (
+                <div className={styles.pendingRow}>
+                  {pendingFiles.map((f, idx) => (
+                    <div key={`${f.name}-${idx}`} className={styles.pendingChip}>
+                      <span className={styles.pendingName}>{f.name}</span>
+                      <button
+                        type="button"
+                        className={styles.pendingRemove}
+                        onClick={() => removePending(idx)}
+                        aria-label="移除"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <textarea
+                className={styles.input}
+                rows={3}
+                placeholder="输入问题，Enter 发送；可点「附图」选图（与文字一起参与检索）"
+                value={input}
+                disabled={busy || hydrating}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+              />
+            </div>
+            <div className={styles.composerActions}>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                multiple
+                className={styles.fileInputHidden}
+                onChange={onPickFiles}
+              />
+              <button
+                type="button"
+                className={styles.attachBtn}
+                disabled={busy || hydrating}
+                onClick={() => fileInputRef.current?.click()}
+                title="附加图片"
+              >
+                附图
+              </button>
+              <button
+                type="button"
+                className={styles.send}
+                disabled={!canSend}
+                onClick={() => void onSend()}
+              >
+                发送
+              </button>
+            </div>
           </div>
         </main>
       </div>

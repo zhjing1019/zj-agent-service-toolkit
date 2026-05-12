@@ -231,25 +231,89 @@ def _load_index() -> tuple[list[dict[str, Any]], np.ndarray] | tuple[None, None]
     return manifest, mat
 
 
-def retrieve_image_rag_context(query: str) -> str:
-    """用 CLIP 文本向量与图片库做相似度检索，返回可拼进 RAG 上下文的文本块。"""
-    if not settings.IMAGE_RAG_ENABLE or not (query or "").strip():
-        return ""
-    manifest, mat = _load_index()
-    if not manifest or mat is None or mat.shape[0] == 0:
-        return ""
-
+def encode_user_image_clip_vectors(abs_paths: list[str]) -> list[np.ndarray]:
+    """对用户上传图片做 CLIP 编码并归一化；失败项跳过。"""
+    if not abs_paths:
+        return []
+    try:
+        PILImage = _pil_image_mod()
+    except ImportError:
+        return []
     model = _get_clip_model()
+    vecs: list[np.ndarray] = []
+    for p in abs_paths:
+        if not os.path.isfile(p):
+            continue
+        try:
+            img = PILImage.open(p).convert("RGB")
+            v = model.encode(img, convert_to_numpy=True, show_progress_bar=False)
+        except Exception:
+            continue
+        v = np.asarray(v, dtype=np.float32).reshape(-1)
+        v = v / (float(np.linalg.norm(v)) + 1e-9)
+        vecs.append(v)
+    return vecs
+
+
+def _combined_clip_query_embedding(
+    text_query: str, user_vecs: list[np.ndarray] | None
+) -> np.ndarray | None:
+    """文本 + 用户多图均值向量按权重融合，再归一化。"""
+    t = (text_query or "").strip()
+    has_u = bool(user_vecs)
+    if not t and not has_u:
+        return None
+    model = _get_clip_model()
+    tw = float(settings.IMAGE_RAG_TEXT_WEIGHT)
+    uw = float(settings.IMAGE_RAG_USER_IMAGE_WEIGHT)
+    if has_u:
+        u = np.mean(np.stack(user_vecs, axis=0), axis=0)
+        u = u / (float(np.linalg.norm(u)) + 1e-9)
+        if not t:
+            return u
+        t_emb = model.encode(
+            [t], convert_to_numpy=True, show_progress_bar=False
+        )[0]
+        t_emb = np.asarray(t_emb, dtype=np.float32).reshape(-1)
+        t_emb = t_emb / (float(np.linalg.norm(t_emb)) + 1e-9)
+        s = tw + uw
+        q = (tw / s) * t_emb + (uw / s) * u
+        return q / (float(np.linalg.norm(q)) + 1e-9)
     try:
         q = model.encode(
-            [query.strip()],
-            convert_to_numpy=True,
-            show_progress_bar=False,
+            [t], convert_to_numpy=True, show_progress_bar=False
         )[0]
     except Exception:
-        return ""
+        return None
     q = np.asarray(q, dtype=np.float32).reshape(-1)
-    q = q / (float(np.linalg.norm(q)) + 1e-9)
+    return q / (float(np.linalg.norm(q)) + 1e-9)
+
+
+def retrieve_image_rag_block_and_refs(
+    text_query: str,
+    user_image_abs_paths: list[str] | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """
+    CLIP 检索知识库图片；若提供用户上传图路径，与 text_query 向量融合后再检索。
+    返回 (RAG 文本块, [{rel, score, caption}, ...])。
+    """
+    refs: list[dict[str, Any]] = []
+    if not settings.IMAGE_RAG_ENABLE:
+        return "", refs
+    tq = (text_query or "").strip()
+    paths = user_image_abs_paths or []
+    if not tq and not paths:
+        return "", refs
+
+    manifest, mat = _load_index()
+    if not manifest or mat is None or mat.shape[0] == 0:
+        return "", refs
+
+    user_vecs = encode_user_image_clip_vectors(paths) if paths else []
+    u_for_combine: list[np.ndarray] | None = user_vecs if user_vecs else None
+    q = _combined_clip_query_embedding(text_query, u_for_combine)
+    if q is None:
+        return "", refs
 
     sims = mat @ q
     k = max(1, int(settings.IMAGE_RAG_TOP_K))
@@ -264,18 +328,34 @@ def retrieve_image_rag_context(query: str) -> str:
         cap = (row.get("caption") or "").strip()
         score = float(sims[int(idx)])
         abs_p = os.path.normpath(os.path.join(know_dir, rel.replace("/", os.sep)))
-        cap_line = f"描述：{cap}" if cap else "描述：（无，可依赖文件名与用户问题推断；或索引时安装 transformers 并开启 BLIP，或添加「图片路径.caption.txt」侧写）"
+        cap_line = (
+            f"描述：{cap}"
+            if cap
+            else "描述：（无，可依赖文件名与用户问题推断；或索引时安装 transformers 并开启 BLIP，或添加「图片路径.caption.txt」侧写）"
+        )
         lines.append(
             f"{rank}. 相对路径：`{rel}`\n   {cap_line}\n   CLIP相关度：{score:.3f}\n   本地绝对路径：{abs_p}"
         )
+        refs.append({"rel": rel, "score": score, "caption": cap})
 
     body = "\n\n".join(lines)
     max_c = max(200, int(settings.IMAGE_RAG_MAX_CONTEXT_CHARS))
     if len(body) > max_c:
         body = body[:max_c] + "\n...（图片检索块已截断）"
 
-    return (
+    note = ""
+    if user_vecs:
+        note = "（已融合用户本轮上传图片的 CLIP 语义。）\n"
+    block = (
         "【多模态-知识库图片检索】以下为 CLIP 图文向量相似度命中的图片（按相关度排序）。\n"
-        "回答时请结合「文本知识库片段」与下列图片描述/路径；若描述为空勿编造画面细节。\n\n"
+        + note
+        + "回答时请结合「文本知识库片段」与下列图片描述/路径；若描述为空勿编造画面细节。\n\n"
         + body
     )
+    return block, refs
+
+
+def retrieve_image_rag_context(query: str) -> str:
+    """仅用文本问句检索知识库图片（兼容旧调用）。"""
+    block, _ = retrieve_image_rag_block_and_refs(query, None)
+    return block

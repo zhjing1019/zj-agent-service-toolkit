@@ -243,11 +243,129 @@
 
 .composer {
   display: flex;
-  gap: 0.65rem;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.composerMain {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.composerActions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.pendingRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.pendingChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  font-size: 0.78rem;
+  color: #c9d1d9;
+}
+
+.pendingName {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pendingRemove {
+  border: none;
+  background: transparent;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+}
+
+.pendingRemove:hover {
+  color: #f85149;
+}
+
+.fileInputHidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.attachBtn {
+  flex-shrink: 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+  background: #21262d;
+  color: #c9d1d9;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.attachBtn:hover:not(:disabled) {
+  border-color: #58a6ff;
+  color: #e8eaed;
+}
+
+.attachBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.thumbRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.45rem;
+}
+
+.thumbLink {
+  display: block;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #30363d;
+  line-height: 0;
+}
+
+.thumbImg {
+  display: block;
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  background: #0d1117;
+}
+
+.refBlock {
+  margin-bottom: 0.45rem;
+}
+
+.refLabel {
+  display: block;
+  font-size: 0.72rem;
+  color: #8b949e;
+  margin-bottom: 0.3rem;
 }
 
 .input {
+  width: 100%;
   flex: 1;
   resize: vertical;
   min-height: 4.5rem;

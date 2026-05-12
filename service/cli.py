@@ -44,6 +44,8 @@ def run_cli():
             "task_output": "",
             "final_summary": "",
             "skip_summary_llm": False,
+            "user_image_paths": [],
+            "rag_referenced_images": [],
         }
         try:
             res = invoke_langgraph_with_timeout(

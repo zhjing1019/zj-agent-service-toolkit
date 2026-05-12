@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Dict
+from typing import TypedDict, List, Dict, NotRequired
 
 class AgentState(TypedDict):
     task: str
@@ -16,3 +16,6 @@ class AgentState(TypedDict):
     task_output: str           # 单个子任务输出
     final_summary: str         # 最终汇总结果
     skip_summary_llm: bool     # True 时汇总节点直接透出 task_output，不再调用大模型
+    # 用户上传图（绝对路径）；RAG 检索命中的知识库图片元数据
+    user_image_paths: NotRequired[List[str]]
+    rag_referenced_images: NotRequired[List[Dict]]

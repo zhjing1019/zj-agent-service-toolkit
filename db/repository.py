@@ -1,8 +1,11 @@
-from sqlalchemy.orm import Session
+import json
+import uuid
+
 from sqlalchemy import func
+from sqlalchemy.orm import Session
+
 from .base import get_db
 from .models import ChatHistory
-import uuid
 
 class ChatRepository:
     @staticmethod
@@ -11,12 +14,19 @@ class ChatRepository:
         return str(uuid.uuid4())[:16]
 
     @staticmethod
-    def save_chat(db: Session, session_id: str, role: str, content: str):
-        """保存单条聊天记录"""
+    def save_chat(
+        db: Session,
+        session_id: str,
+        role: str,
+        content: str,
+        attachments_json: str | None = None,
+    ):
+        """保存单条聊天记录；attachments_json 为 JSON 字符串或 None。"""
         record = ChatHistory(
             session_id=session_id,
             role=role,
-            content=content
+            content=content,
+            attachments_json=attachments_json,
         )
         db.add(record)
         db.commit()
@@ -28,7 +38,17 @@ class ChatRepository:
                    .filter(ChatHistory.session_id == session_id)\
                    .order_by(ChatHistory.create_time.asc())\
                    .all()
-        return [{"role": r.role, "content": r.content} for r in records]
+        out: list[dict] = []
+        for r in records:
+            row: dict = {"role": r.role, "content": r.content}
+            aj = getattr(r, "attachments_json", None)
+            if aj:
+                try:
+                    row["attachments"] = json.loads(aj)
+                except (json.JSONDecodeError, TypeError):
+                    row["attachments"] = None
+            out.append(row)
+        return out
 
     @staticmethod
     def list_sessions(db: Session, limit: int = 100) -> list:
@@ -57,6 +77,8 @@ class ChatRepository:
             )
             raw = (first_user[0] if first_user else "") or ""
             one_line = raw.replace("\n", " ").strip()
+            if not one_line.strip():
+                one_line = "（含附图）"
             preview = (
                 (one_line[:72] + "…")
                 if len(one_line) > 72

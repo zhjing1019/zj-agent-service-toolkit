@@ -8,6 +8,7 @@ class ChatHistory(Base):
     session_id = Column(String(50), index=True)
     role = Column(String(20))
     content = Column(Text)
+    attachments_json = Column(Text, nullable=True)  # JSON：upload_image_ids / referenced_images
     create_time = Column(DateTime, default=datetime.now)
 
 class TaskRecord(Base):

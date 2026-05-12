@@ -6,7 +6,10 @@ from core.resilience import is_degraded_reply
 
 
 def planner_route(
-    task: str, history: list | None = None
+    task: str,
+    history: list | None = None,
+    *,
+    upload_note: str = "",
 ) -> tuple[str, str | None, bool]:
     """
     规划路由。
@@ -14,7 +17,8 @@ def planner_route(
     agent_type 含 degraded：直达汇总节点并跳过汇总 LLM。
     """
     h = format_dialogue_history(history, max_messages=10)
-    prompt = PLANNER_PROMPT.format(history=h, task=task)
+    un = (upload_note or "").strip() or "（无）"
+    prompt = PLANNER_PROMPT.format(history=h, task=task, upload_note=un)
     res = resilient_invoke(prompt)
     text = (res.content or "").strip()
     if is_degraded_reply(text):

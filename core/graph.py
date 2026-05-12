@@ -16,7 +16,7 @@ from core.intent_parser import parse_task_by_deepseek
 from toolkit.base_tool import TOOL_REGISTRY
 from core.llm import resilient_invoke
 from core.rag import query_knowledge
-from core.rag_images import retrieve_image_rag_context
+from core.rag_images import retrieve_image_rag_block_and_refs
 from core.coreference import resolve_retrieval_query
 from core.multi_agent import planner_route, summary_agent
 from core.prompts import CHAT_AGENT_PROMPT, RAG_ANSWER_PROMPT, format_dialogue_history
@@ -132,7 +132,16 @@ class AgentGraph:
     # 2. 规划调度Agent
     def planner_agent_node(self, state: AgentState):
         hist = state.get("history") or []
-        route, handoff, skip = planner_route(state["task"], hist)
+        paths = state.get("user_image_paths") or []
+        upload_note = ""
+        if paths:
+            upload_note = (
+                f"用户本轮上传了 {len(paths)} 张图片；若需结合知识库或理解图像内容，"
+                "请优先选择 rag（仅闲聊且无检索需求再选 chat）。"
+            )
+        route, handoff, skip = planner_route(
+            state["task"], hist, upload_note=upload_note
+        )
         out: dict = {"agent_type": route}
         if handoff is not None:
             out["task_output"] = handoff
@@ -146,7 +155,8 @@ class AgentGraph:
         task = state["task"]
         resolved = resolve_retrieval_query(task, history)
         text_ctx = query_knowledge(resolved)
-        img_ctx = retrieve_image_rag_context(resolved)
+        user_paths = state.get("user_image_paths") or []
+        img_ctx, refs = retrieve_image_rag_block_and_refs(resolved, user_paths)
         if img_ctx:
             sep = "\n\n---\n\n"
             room = settings.RAG_MAX_CONTEXT_LEN - len(img_ctx) - len(sep)
@@ -162,7 +172,11 @@ class AgentGraph:
             context = text_ctx
         if len(context) > settings.RAG_MAX_CONTEXT_LEN:
             context = context[: settings.RAG_MAX_CONTEXT_LEN] + "\n...（内容截断）"
-        return {"rag_context": context, "resolved_retrieval_query": resolved}
+        return {
+            "rag_context": context,
+            "resolved_retrieval_query": resolved,
+            "rag_referenced_images": refs,
+        }
 
     # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
     def llm_parse_node(self, state: AgentState):

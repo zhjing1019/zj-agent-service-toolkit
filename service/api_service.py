@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+import mimetypes
 import time
 import uuid
+from pathlib import Path
+from urllib.parse import quote, unquote
 
-from fastapi import APIRouter, HTTPException, Request, Depends, Query
-from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 from agent.base_agent import BaseAgent
 from sqlalchemy.orm import Session
 from config.logger import logger
@@ -45,11 +48,64 @@ from security.rbac import (
 
 class AgentChatReq(BaseModel):
     session_id: str | None = None
-    task: str
+    task: str = ""
     # 与 LangGraph 对齐的 Agent：仅 default（SSE/多轮对话）；业务用户由 RBAC 白名单约束
     agent_id: str | None = "default"
     # 与 LangGraph SqliteSaver 的 thread_id 对齐；不传则每次新任务。仅对 POST /chat 生效。
     checkpoint_thread_id: str | None = None
+    # 先 POST /chat/upload-image 拿到的 image_id（32hex+扩展名），最多 CHAT_MAX_IMAGES_PER_MESSAGE
+    image_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("image_ids", mode="before")
+    @classmethod
+    def _normalize_image_ids(cls, v):
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        lim = max(1, int(settings.CHAT_MAX_IMAGES_PER_MESSAGE))
+        out = [str(x).strip() for x in v if str(x).strip()]
+        return out[:lim]
+
+
+def _resolve_user_image_paths(image_ids: list[str] | None) -> list[str]:
+    from service.chat_upload import resolve_upload_image_paths
+
+    return resolve_upload_image_paths(list(image_ids or []))
+
+
+def _effective_chat_task(task: str, paths: list[str]) -> str:
+    t = (task or "").strip()
+    if t:
+        return t
+    if paths:
+        return "请结合我上传的图片回答，并检索知识库中与图片或问题相关的内容。"
+    return ""
+
+
+def _public_knowledge_refs(refs: list) -> list[dict]:
+    out: list[dict] = []
+    for r in refs:
+        if not isinstance(r, dict):
+            continue
+        rel = r.get("rel")
+        if not rel:
+            continue
+        score = r.get("score", 0)
+        try:
+            score_f = float(score)
+        except (TypeError, ValueError):
+            score_f = 0.0
+        url = f"/api/agent/knowledge-image?rel={quote(str(rel), safe='')}"
+        out.append(
+            {
+                "rel": str(rel),
+                "score": score_f,
+                "caption": r.get("caption") or "",
+                "url": url,
+            }
+        )
+    return out
 
 class TaskResumeReq(BaseModel):
     checkpoint_thread_id: str
@@ -162,6 +218,55 @@ def agent_memory(
         "data": memory_list
     }
 
+
+@router.post("/chat/upload-image")
+async def chat_upload_image_route(
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+    file: UploadFile = File(...),
+):
+    """上传聊天附图，返回 image_id，随 /chat 或 /chat/stream 的 image_ids 提交。"""
+    from service.chat_upload import save_chat_upload
+
+    raw = await file.read()
+    try:
+        image_id = save_chat_upload(raw, file.filename or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"code": 200, "data": {"image_id": image_id}}
+
+
+@router.get("/chat-upload")
+def chat_upload_serve(
+    image_id: str = Query(..., min_length=8, max_length=80),
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+):
+    from service.chat_upload import path_for_uploaded_image
+
+    p = path_for_uploaded_image(image_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    mt = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+    return FileResponse(p, media_type=mt)
+
+
+@router.get("/knowledge-image")
+def knowledge_image_serve(
+    rel: str = Query(..., min_length=1, max_length=2048),
+    _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
+):
+    """只读提供 RAG_KNOWLEDGE_DIR 下的图片（rel 为相对知识库目录的路径）。"""
+    root = Path(settings.RAG_KNOWLEDGE_DIR).resolve()
+    decoded = unquote(rel).lstrip("/").replace("\\", "/")
+    if ".." in decoded or decoded.startswith("/"):
+        raise HTTPException(status_code=400, detail="非法路径")
+    target = (root / decoded).resolve()
+    if not str(target).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="非法路径")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    mt = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    return FileResponse(target, media_type=mt)
+
 @router.post("/chat")
 def agent_chat(
     request: Request,
@@ -179,9 +284,14 @@ def agent_chat(
 
         _assert_new_chat_invoke_allowed(checkpoint_thread_id)
 
+        paths = _resolve_user_image_paths(req.image_ids)
+        eff_task = _effective_chat_task(req.task, paths)
+        if not eff_task:
+            raise HTTPException(status_code=400, detail="task与图片不能同时为空")
+
         history = chat_repo.get_history(db, req.session_id)
         initial = {
-            "task": req.task,
+            "task": eff_task,
             "is_safe": False,
             "need_tool": False,
             "tool_name": "",
@@ -195,10 +305,12 @@ def agent_chat(
             "task_output": "",
             "final_summary": "",
             "skip_summary_llm": False,
+            "user_image_paths": paths,
+            "rag_referenced_images": [],
         }
 
         task_run_repo.upsert_start(
-            db, checkpoint_thread_id, req.session_id, req.task or ""
+            db, checkpoint_thread_id, req.session_id, eff_task[:2000]
         )
         cfg = _invoke_cfg(checkpoint_thread_id)
         res = invoke_langgraph_with_timeout(
@@ -211,14 +323,28 @@ def agent_chat(
         agent_reply = res["result"]
         task_run_repo.mark_completed(db, checkpoint_thread_id, agent_reply)
 
-        chat_repo.save_chat(db, req.session_id, "user", req.task)
-        chat_repo.save_chat(db, req.session_id, "agent", agent_reply)
+        refs_raw = res.get("rag_referenced_images") or []
+        pub_refs = _public_knowledge_refs(refs_raw if isinstance(refs_raw, list) else [])
+
+        user_att = (
+            json.dumps({"upload_image_ids": req.image_ids}, ensure_ascii=False)
+            if req.image_ids
+            else None
+        )
+        chat_repo.save_chat(db, req.session_id, "user", eff_task, user_att)
+        agent_att = (
+            json.dumps({"referenced_images": pub_refs}, ensure_ascii=False)
+            if pub_refs
+            else None
+        )
+        chat_repo.save_chat(db, req.session_id, "agent", agent_reply, agent_att)
 
         return {
             "code": 200,
             "session_id": req.session_id,
             "checkpoint_thread_id": checkpoint_thread_id,
             "data": agent_reply,
+            "referenced_images": pub_refs,
         }
     except HTTPException:
         raise
@@ -430,8 +556,12 @@ async def agent_chat_stream(
 
     async def event_gen():
         try:
-            if not (req.task or "").strip():
-                yield _sse_data({"event": "error", "message": "task不能为空"})
+            paths = _resolve_user_image_paths(req.image_ids)
+            eff_task = _effective_chat_task(req.task, paths)
+            if not eff_task:
+                yield _sse_data(
+                    {"event": "error", "message": "task与图片不能同时为空"}
+                )
                 return
 
             session_id = req.session_id or chat_repo.gen_session_id()
@@ -445,7 +575,7 @@ async def agent_chat_stream(
 
             history = chat_repo.get_history(db, session_id)
             initial = {
-                "task": req.task,
+                "task": eff_task,
                 "is_safe": False,
                 "need_tool": False,
                 "tool_name": "",
@@ -459,6 +589,8 @@ async def agent_chat_stream(
                 "task_output": "",
                 "final_summary": "",
                 "skip_summary_llm": False,
+                "user_image_paths": paths,
+                "rag_referenced_images": [],
             }
 
             try:
@@ -503,6 +635,15 @@ async def agent_chat_stream(
                 )
                 return
 
+            refs_raw = state.get("rag_referenced_images") or []
+            pub_refs = _public_knowledge_refs(
+                refs_raw if isinstance(refs_raw, list) else []
+            )
+            if pub_refs:
+                yield _sse_data(
+                    {"event": "refs", "referenced_images": pub_refs}
+                )
+
             task_out = state.get("task_output") or ""
 
             full_parts: list[str] = []
@@ -513,7 +654,7 @@ async def agent_chat_stream(
             else:
                 try:
                     async for piece in async_iterate_summary_stream(
-                        lambda: summary_agent_stream(req.task, task_out, history),
+                        lambda: summary_agent_stream(eff_task, task_out, history),
                         deadline,
                     ):
                         full_parts.append(piece)
@@ -523,8 +664,18 @@ async def agent_chat_stream(
                     return
 
             agent_reply = "".join(full_parts)
-            chat_repo.save_chat(db, session_id, "user", req.task)
-            chat_repo.save_chat(db, session_id, "agent", agent_reply)
+            user_att = (
+                json.dumps({"upload_image_ids": req.image_ids}, ensure_ascii=False)
+                if req.image_ids
+                else None
+            )
+            chat_repo.save_chat(db, session_id, "user", eff_task, user_att)
+            agent_att = (
+                json.dumps({"referenced_images": pub_refs}, ensure_ascii=False)
+                if pub_refs
+                else None
+            )
+            chat_repo.save_chat(db, session_id, "agent", agent_reply, agent_att)
             yield _sse_data({"event": "done"})
         except Exception as e:
             yield _sse_data({"event": "error", "message": str(e)})

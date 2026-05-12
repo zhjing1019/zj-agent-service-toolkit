@@ -78,6 +78,14 @@ class Settings:
         "IMAGE_RAG_BLIP_MODEL", "Salesforce/blip-image-captioning-base"
     )
     IMAGE_RAG_BLIP_MAX_LENGTH = int(os.getenv("IMAGE_RAG_BLIP_MAX_LENGTH", "48"))
+    # 用户上传图与文本问句的 CLIP 融合权重（和为 1 时由归一化保证）
+    IMAGE_RAG_TEXT_WEIGHT = float(os.getenv("IMAGE_RAG_TEXT_WEIGHT", "0.65"))
+    IMAGE_RAG_USER_IMAGE_WEIGHT = float(os.getenv("IMAGE_RAG_USER_IMAGE_WEIGHT", "0.35"))
+
+    # 聊天附图上传（POST /chat/upload-image）
+    CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "./data/chat_uploads")
+    CHAT_UPLOAD_MAX_BYTES = int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(4 * 1024 * 1024)))
+    CHAT_MAX_IMAGES_PER_MESSAGE = int(os.getenv("CHAT_MAX_IMAGES_PER_MESSAGE", "4"))
 
     # LLM 重试与降级（备用模型 / 人工接管提示）
     LLM_RETRY_MAX = int(os.getenv("LLM_RETRY_MAX", "3"))
