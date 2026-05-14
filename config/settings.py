@@ -82,6 +82,16 @@ class Settings:
     IMAGE_RAG_TEXT_WEIGHT = float(os.getenv("IMAGE_RAG_TEXT_WEIGHT", "0.65"))
     IMAGE_RAG_USER_IMAGE_WEIGHT = float(os.getenv("IMAGE_RAG_USER_IMAGE_WEIGHT", "0.35"))
 
+    # AI 问数（NL2SQL + 词典向量库 + SQL 校验）：Chroma 与主 RAG 分目录，避免互相覆盖
+    ANALYTICS_CHROMA_DIR = os.getenv("ANALYTICS_CHROMA_DIR", "./chroma_analytics")
+    ANALYTICS_TOP_K = int(os.getenv("ANALYTICS_TOP_K", "8"))
+    ANALYTICS_ROW_LIMIT = int(os.getenv("ANALYTICS_ROW_LIMIT", "200"))
+    ANALYTICS_ALLOWED_TABLE_PREFIX = os.getenv("ANALYTICS_ALLOWED_TABLE_PREFIX", "ma_")
+    # 业务词典 YAML（表别名、指标口径、推理映射）；不存在时仅用库表结构建索引
+    ANALYTICS_BUSINESS_YAML = os.getenv(
+        "ANALYTICS_BUSINESS_YAML", "./knowledge/analytics_business.yaml"
+    )
+
     # 聊天附图上传（POST /chat/upload-image）
     CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "./data/chat_uploads")
     CHAT_UPLOAD_MAX_BYTES = int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(4 * 1024 * 1024)))

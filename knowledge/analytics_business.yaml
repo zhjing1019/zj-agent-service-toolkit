@@ -1,0 +1,38 @@
+# 医美销售问数：业务词典与推理映射（会写入向量库，供 NL2SQL 检索）
+# 你可随时增删条目；改完后运行: python -m core.analytics.reindex
+
+entries:
+  - id: branch_xuhui
+    title: 分院别名
+    content: |
+      「徐汇院」「徐汇旗舰院」对应分院编码 branch_code = SH-XH-01，表 ma_branch。
+      查询订单、日统计时通常 JOIN ma_branch ON ma_order.branch_id = ma_branch.id 或按 branch_id 过滤。
+
+  - id: branch_pudong
+    title: 浦东分院
+    content: |
+      「浦东院」对应 branch_code = SH-PD-02，表 ma_branch。
+
+  - id: revenue_daily
+    title: 日营收口径
+    content: |
+      「日营收」「当天收入」优先用 ma_daily_sales_stat.revenue（按分院、按日已聚合）。
+      若问单笔订单金额，用 ma_order.total_amount 或 paid_amount，注意 order_status 过滤已付。
+
+  - id: order_paid
+    title: 订单状态
+    content: |
+      已支付订单 ma_order.order_status 常为 paid；待支付 pending_pay；部分支付 partial_paid。
+      统计成交单量时可 WHERE order_status IN ('paid','partial_paid') 视业务而定。
+
+  - id: lead_source
+    title: 线索来源
+    content: |
+      线索来源维表 ma_lead_source；线索表 ma_lead.source_id 外键关联。
+      问「小红书线索」可 JOIN ma_lead_source WHERE name LIKE '%小红书%' OR code = 'XHS_AD'。
+
+  - id: installment
+    title: 分期
+    content: |
+      分期主表 ma_installment_plan 与订单一对一 order_id；期次明细 ma_installment_schedule.plan_id。
+      问「每期应还」查 ma_installment_schedule.amount、due_date、status。
