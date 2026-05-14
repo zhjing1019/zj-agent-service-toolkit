@@ -25,6 +25,56 @@ from core.resilience import is_degraded_reply, is_retryable_tool_error
 from core.task_timeout import ToolExecutionTimeoutError, run_tool_call_with_timeout
 # 可视化功能已内置在编译后的图对象中，无需额外导入
 
+
+def _task_looks_like_demo_analytics(task: str) -> bool:
+    """
+    与主 RAG 文档库无关、应走演示库问数的问题（规划模型偶发选 rag 时纠偏）。
+    """
+    t = (task or "").strip()
+    if len(t) > 280:
+        return False
+    biz = any(
+        k in t
+        for k in (
+            "订单",
+            "销售单",
+            "下单",
+            "营收",
+            "销售额",
+            "日营收",
+            "客户",
+            "预约",
+            "支付",
+            "退款",
+            "分期",
+            "咨询单",
+        )
+    )
+    scope = any(
+        k in t
+        for k in (
+            "院",
+            "店",
+            "门店",
+            "分院",
+            "徐汇",
+            "浦东",
+            "臻美",
+            "月",
+            "年",
+            "日",
+            "查询",
+            "查出",
+            "列出",
+            "哪些",
+            "多少",
+            "统计",
+            "汇总",
+        )
+    )
+    return biz and scope
+
+
 # 2. 定义工作流类
 class AgentGraph:
     # 初始化：自动构建流程图
@@ -62,6 +112,8 @@ class AgentGraph:
         workflow.add_node("summary_agent", self.summary_agent_node)
         # RAG检索节点
         workflow.add_node("rag_retrieve", self.rag_retrieve_node)
+        # 业务库问数（NL2SQL，与主 RAG 文档库分离）
+        workflow.add_node("analytics_answer_agent", self.analytics_answer_node)
 
         # ====================== 设置入口 ======================
         workflow.set_entry_point("security_check")
@@ -80,6 +132,7 @@ class AgentGraph:
             {
                 "tool": "llm_parse",
                 "rag": "rag_retrieve",
+                "analytics": "analytics_answer_agent",
                 "chat": "chat_answer_agent",
                 "degraded": "summary_agent",
             },
@@ -92,6 +145,9 @@ class AgentGraph:
         # RAG知识库链路
         workflow.add_edge("rag_retrieve", "rag_answer_agent")
         workflow.add_edge("rag_answer_agent", "summary_agent")
+
+        # 问数链路（直连数据库演示域 ma_*）
+        workflow.add_edge("analytics_answer_agent", "summary_agent")
 
         # 普通闲聊链路
         workflow.add_edge("chat_answer_agent", "summary_agent")
@@ -142,6 +198,8 @@ class AgentGraph:
         route, handoff, skip = planner_route(
             state["task"], hist, upload_note=upload_note
         )
+        if route == "rag" and _task_looks_like_demo_analytics(state["task"]):
+            route = "analytics"
         out: dict = {"agent_type": route}
         if handoff is not None:
             out["task_output"] = handoff
@@ -177,6 +235,39 @@ class AgentGraph:
             "resolved_retrieval_query": resolved,
             "rag_referenced_images": refs,
         }
+
+    def analytics_answer_node(self, state: AgentState):
+        """院内演示库问数：走 NL2SQL，与主 RAG 文档库分离。"""
+        from core.analytics.nl2sql import run_nl_query
+
+        out = run_nl_query(state["task"])
+        if not out.get("ok"):
+            err = out.get("validation_error") or "问数失败"
+            sql = out.get("sql")
+            lines = [f"未能完成数据查询：{err}"]
+            if sql:
+                lines.append(f"\n相关 SQL（若有）：\n```sql\n{sql}\n```")
+            return {"task_output": "\n".join(lines), "skip_summary_llm": True}
+
+        summary = (out.get("summary") or "").strip() or "（无文字小结）"
+        cols = out.get("columns") or []
+        rows = out.get("rows") or []
+        parts: list[str] = [summary]
+        if rows and cols:
+            parts.append("\n**数据预览**（表格）：")
+            parts.append("| " + " | ".join(str(c) for c in cols) + " |")
+            parts.append("| " + " | ".join("---" for _ in cols) + " |")
+            for r in rows[:15]:
+                cells = []
+                for x in r:
+                    s = str(x)
+                    if len(s) > 80:
+                        s = s[:77] + "..."
+                    cells.append(s.replace("|", "\\|"))
+                parts.append("| " + " | ".join(cells) + " |")
+            if out.get("has_more"):
+                parts.append("\n（结果已截断至行数上限，可缩小时间或分院范围后重试。）")
+        return {"task_output": "\n".join(parts), "skip_summary_llm": True}
 
     # ====================== 节点 2：DeepSeek 大模型解析意图 ======================
     def llm_parse_node(self, state: AgentState):
@@ -261,8 +352,7 @@ class AgentGraph:
         prompt = RAG_ANSWER_PROMPT.format(
             context=context, history=htext, task=task
         )
-        reply = resilient_invoke(prompt)
-        content = (reply.content or "").strip()
+        content = (resilient_invoke(prompt) or "").strip()
         out: dict = {"task_output": content}
         if is_degraded_reply(content):
             out["skip_summary_llm"] = True
@@ -273,8 +363,7 @@ class AgentGraph:
         hist = state.get("history") or []
         htext = format_dialogue_history(hist, max_messages=14)
         prompt = CHAT_AGENT_PROMPT.format(history=htext, task=state["task"])
-        reply = resilient_invoke(prompt)
-        content = (reply.content or "").strip()
+        content = (resilient_invoke(prompt) or "").strip()
         out: dict = {"task_output": content}
         if is_degraded_reply(content):
             out["skip_summary_llm"] = True
@@ -291,8 +380,7 @@ class AgentGraph:
         return {"result": final}
 
     def direct_answer_node(self, state: AgentState):
-        reply = resilient_invoke(state["task"])
-        return {"result": (reply.content or "").strip()}
+        return {"result": (resilient_invoke(state["task"]) or "").strip()}
 
 # 全局单例，整个项目共用一个图
 agent_graph = AgentGraph()

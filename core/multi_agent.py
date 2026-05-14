@@ -19,15 +19,14 @@ def planner_route(
     h = format_dialogue_history(history, max_messages=10)
     un = (upload_note or "").strip() or "（无）"
     prompt = PLANNER_PROMPT.format(history=h, task=task, upload_note=un)
-    res = resilient_invoke(prompt)
-    text = (res.content or "").strip()
+    text = (resilient_invoke(prompt) or "").strip()
     if is_degraded_reply(text):
         return ("degraded", text, True)
     result = text.lower()
-    if result in ("tool", "rag", "chat"):
+    if result in ("tool", "rag", "chat", "analytics"):
         route = result
     else:
-        m = re.search(r"\b(tool|rag|chat)\b", result)
+        m = re.search(r"\b(tool|rag|chat|analytics)\b", result)
         route = m.group(1) if m else "chat"
     return (route, None, False)
 
@@ -41,8 +40,7 @@ def summary_agent(task: str, output: str, history: list | None = None) -> str:
     """汇总 Agent：整理输出最终回答（结合多轮历史）。"""
     h = format_dialogue_history(history, max_messages=14)
     prompt = SUMMARY_PROMPT.format(history=h, task=task, output=output)
-    res = resilient_invoke(prompt)
-    return (res.content or "").strip()
+    return (resilient_invoke(prompt) or "").strip()
 
 
 def summary_agent_stream(

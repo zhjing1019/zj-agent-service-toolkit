@@ -80,6 +80,28 @@ def _get_fallback_model(get_fallback: Callable[[], Any] | None) -> Any | None:
         return None
 
 
+def aimessage_to_text(msg: Any) -> str:
+    """将 invoke 返回的 AIMessage / 兼容对象转为纯文本，供业务侧 strip / JSON 解析。"""
+    if msg is None:
+        return ""
+    if isinstance(msg, str):
+        return msg
+    content = getattr(msg, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                t = block.get("text") or ""
+                if t:
+                    parts.append(t)
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return "" if content is None else str(content)
+
+
 def invoke_llm_resilient(
     primary: Any,
     prompt: str,

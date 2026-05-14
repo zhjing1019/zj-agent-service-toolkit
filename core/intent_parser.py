@@ -9,8 +9,7 @@ def parse_task_by_deepseek(task: str, history: list | None = None):
 
     h = format_dialogue_history(history, max_messages=8)
     prompt = TOOL_PROMPT.format(history=h, task=task)
-    response = resilient_invoke(prompt)
-    raw = (response.content or "").strip()
+    raw = (resilient_invoke(prompt) or "").strip()
     if is_degraded_reply(raw):
         return {
             "need_tool": False,

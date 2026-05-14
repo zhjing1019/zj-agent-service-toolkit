@@ -11,6 +11,10 @@ from sqlalchemy import text
 
 from config.settings import settings
 from db.base import engine
+from core.analytics.executor import execute_read_only
+from core.analytics.retrieve import retrieve_analytics_context
+from core.analytics.sql_guard import validate_analytics_sql
+from core.llm import resilient_invoke
 
 
 def build_compact_schema() -> str:
@@ -52,11 +56,69 @@ LIMIT 200
 """.strip()
 
 
+_FALLBACK_XUHUI_ORDERS = """
+SELECT o.id, o.order_no, o.ordered_at, o.total_amount, o.paid_amount, o.order_status,
+       b.name AS branch_name, b.branch_code
+FROM ma_order o
+JOIN ma_branch b ON o.branch_id = b.id
+WHERE (b.branch_code = 'SH-XH-01' OR b.name LIKE '%徐汇%')
+ORDER BY o.ordered_at DESC
+LIMIT 200
+""".strip()
+
+# 某月订单：必须按 ordered_at 限月，避免误走日统计表
+_FALLBACK_XUHUI_MAY_ORDERS = """
+SELECT o.id, o.order_no, o.ordered_at, o.total_amount, o.paid_amount, o.order_status,
+       b.name AS branch_name, b.branch_code
+FROM ma_order o
+JOIN ma_branch b ON o.branch_id = b.id
+WHERE (b.branch_code = 'SH-XH-01' OR b.name LIKE '%徐汇%')
+  AND o.ordered_at >= '2026-05-01' AND o.ordered_at < '2026-06-01'
+ORDER BY o.ordered_at DESC
+LIMIT 200
+""".strip()
+
+
+def _has_xuhui_branch_hint(q: str) -> bool:
+    """徐汇旗舰院系：全名常含「臻美·徐汇」；勿把浦东旗舰算进来。"""
+    return ("徐汇" in q) or ("旗舰" in q and "浦东" not in q) or (
+        "臻美" in q and "徐汇" in q
+    )
+
+
+def _has_may_2026_hint(q: str) -> bool:
+    return any(x in q for x in ("5月", "五月", "05月", "2026-05", "五月份"))
+
+
+def _should_try_xuhui_may_order_list(question: str) -> bool:
+    """徐汇系 + 5 月 + 查订单行 → ma_order + 月份区间（优先于日统计模板）。"""
+    q = (question or "").strip()
+    if not _has_xuhui_branch_hint(q) or not _has_may_2026_hint(q):
+        return False
+    return any(x in q for x in ("订单", "下单", "销售单", "order")) or (
+        "order" in q.lower()
+    )
+
+
+def _should_try_xuhui_orders(question: str) -> bool:
+    """徐汇/旗舰院 + 查订单（不要求带月份）。"""
+    q = (question or "").strip()
+    if _should_try_xuhui_may_order_list(q):
+        return False
+    branch_hit = _has_xuhui_branch_hint(q)
+    order_hit = any(
+        x in q for x in ("订单", "下单", "销售单", "order")
+    ) or ("order" in q.lower())
+    return branch_hit and order_hit
+
+
 def _should_try_xuhui_may_fallback(question: str) -> bool:
     q = (question or "").strip()
+    if _should_try_xuhui_may_order_list(q):
+        return False
     if "徐汇" not in q:
         return False
-    if not any(x in q for x in ("5月", "五月", "05月", "2026-05", "五月份")):
+    if not _has_may_2026_hint(q):
         return False
     if not any(x in q for x in ("营收", "收入", "订单", "单量", "order", "revenue", "日营")):
         return False
@@ -77,8 +139,9 @@ def _nl2sql_prompt(question: str, rag_block: str, schema_block: str) -> str:
 
 【系统约定（必读）】
 - 用户说「怎么查」「如何查」时，仍要生成 **可执行且能返回数据行** 的 SELECT，不要生成只含说明字符串、无真实指标的占位查询。
-- 用户口头「徐汇院」：库中分院名称多为「臻美·徐汇旗舰院」等，**禁止** `WHERE name = '徐汇院'`（通常匹配不到）。应使用 `ma_branch.branch_code = 'SH-XH-01'` **或** `name LIKE '%徐汇%'`。
+- 用户口头「徐汇院」「徐汇旗舰院」：库中分院名多为「臻美·徐汇旗舰院」，**禁止** `WHERE b.name = '徐汇旗舰院'` 等精确全名（常 0 行）。请用 `b.branch_code = 'SH-XH-01'` 或 `b.name LIKE '%徐汇%'`。
 - 问「某月每天日营收、订单量」优先 `ma_daily_sales_stat`（列 `stat_date`, `revenue`, `order_count`），并与 `ma_branch` 按 `branch_id` 关联。
+- 问「某分院有哪些订单」用 `ma_order` JOIN `ma_branch`，按 `o.branch_id` 与分院过滤。
 
 【业务词典与推理（从向量库检索，可能不完整）】
 {rag_block}
@@ -150,7 +213,7 @@ def run_nl_query(question: str) -> dict[str, Any]:
     """
     完整问数流水线。
     返回 dict: ok, sql, validation_error, columns, rows, has_more, summary, rag_snippets,
-    used_canonical_template（是否命中徐汇+5月固定模板）, used_empty_result_fallback
+    used_canonical_template（是否命中内置固定模板：徐汇+5月订单、徐汇+5月日统计、徐汇/旗舰院+订单）, used_empty_result_fallback
     """
     q = (question or "").strip()
     if not q:
@@ -172,6 +235,33 @@ def run_nl_query(question: str) -> dict[str, Any]:
     schema_block = build_compact_schema()
 
     # 高频问法：不依赖大模型写 SQL，直接用已校验模板（避免 name='徐汇院' 等 0 行）
+    # 「5 月 + 订单」须走 ma_order，不可先走日统计（否则用户以为查不出订单）
+    if _should_try_xuhui_may_order_list(q):
+        ok_mo, _msg_mo, sql_mo = validate_analytics_sql(_FALLBACK_XUHUI_MAY_ORDERS)
+        if ok_mo and sql_mo:
+            try:
+                cols_mo, rows_mo, more_mo = execute_read_only(sql_mo)
+                if rows_mo:
+                    preview_lines = [
+                        str(dict(zip(cols_mo, r))) for r in rows_mo[:8]
+                    ]
+                    preview = "\n".join(preview_lines)
+                    summary_raw = resilient_invoke(
+                        _summary_prompt(q, sql_mo, preview)
+                    )
+                    return _success_payload(
+                        sql_norm=sql_mo,
+                        cols=cols_mo,
+                        rows=rows_mo,
+                        has_more=more_mo,
+                        summary=(summary_raw or "").strip(),
+                        snippets=snippets,
+                        used_canonical_template=True,
+                        used_empty_result_fallback=False,
+                    )
+            except Exception:
+                pass
+
     if _should_try_xuhui_may_fallback(q):
         ok_c, _msg_c, sql_c = validate_analytics_sql(_FALLBACK_XUHUI_MAY_DAILY)
         if ok_c and sql_c:
@@ -190,6 +280,32 @@ def run_nl_query(question: str) -> dict[str, Any]:
                         cols=cols_c,
                         rows=rows_c,
                         has_more=more_c,
+                        summary=(summary_raw or "").strip(),
+                        snippets=snippets,
+                        used_canonical_template=True,
+                        used_empty_result_fallback=False,
+                    )
+            except Exception:
+                pass
+
+    if _should_try_xuhui_orders(q):
+        ok_o, _msg_o, sql_o = validate_analytics_sql(_FALLBACK_XUHUI_ORDERS)
+        if ok_o and sql_o:
+            try:
+                cols_o, rows_o, more_o = execute_read_only(sql_o)
+                if rows_o:
+                    preview_lines = [
+                        str(dict(zip(cols_o, r))) for r in rows_o[:8]
+                    ]
+                    preview = "\n".join(preview_lines)
+                    summary_raw = resilient_invoke(
+                        _summary_prompt(q, sql_o, preview)
+                    )
+                    return _success_payload(
+                        sql_norm=sql_o,
+                        cols=cols_o,
+                        rows=rows_o,
+                        has_more=more_o,
                         summary=(summary_raw or "").strip(),
                         snippets=snippets,
                         used_canonical_template=True,
@@ -223,6 +339,16 @@ def run_nl_query(question: str) -> dict[str, Any]:
         )
 
     used_fallback = False
+    if not rows and _should_try_xuhui_may_order_list(q):
+        ok_mo, _, sql_mo = validate_analytics_sql(_FALLBACK_XUHUI_MAY_ORDERS)
+        if ok_mo and sql_mo:
+            try:
+                c2, r2, h2 = execute_read_only(sql_mo)
+                if r2:
+                    cols, rows, has_more, sql_norm = c2, r2, h2, sql_mo
+                    used_fallback = True
+            except Exception:
+                pass
     if not rows and _should_try_xuhui_may_fallback(q):
         ok_fb, msg_fb, sql_fb = validate_analytics_sql(_FALLBACK_XUHUI_MAY_DAILY)
         if ok_fb and sql_fb:
@@ -230,6 +356,16 @@ def run_nl_query(question: str) -> dict[str, Any]:
                 c2, r2, h2 = execute_read_only(sql_fb)
                 if r2:
                     cols, rows, has_more, sql_norm = c2, r2, h2, sql_fb
+                    used_fallback = True
+            except Exception:
+                pass
+    if not rows and _should_try_xuhui_orders(q):
+        ok_o, _, sql_o = validate_analytics_sql(_FALLBACK_XUHUI_ORDERS)
+        if ok_o and sql_o:
+            try:
+                c2, r2, h2 = execute_read_only(sql_o)
+                if r2:
+                    cols, rows, has_more, sql_norm = c2, r2, h2, sql_o
                     used_fallback = True
             except Exception:
                 pass

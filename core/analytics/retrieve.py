@@ -18,8 +18,8 @@ def get_embedding():
 
 # 中文问数常见词：与主问句拼接成第二次检索，减轻「长问句语义漂移」导致召不回业务块的问题
 _RETRIEVAL_QUERY_BOOST = (
-    " 徐汇 浦东 旗舰院 分院 branch_code 日营收 营收 revenue 订单 order_count "
-    "ma_daily_sales_stat ma_branch stat_date 按月 5月"
+    " 徐汇 浦东 旗舰院 旗舰 分院 branch_code 日营收 营收 revenue 订单 order order_count "
+    "ma_daily_sales_stat ma_order ma_branch stat_date 按月 5月"
 )
 
 

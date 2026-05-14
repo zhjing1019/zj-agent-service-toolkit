@@ -42,10 +42,11 @@ def _fallback_llm():
     return get_llm_factory(p)
 
 
-def resilient_invoke(prompt: str):
-    from core.resilience import invoke_llm_resilient
+def resilient_invoke(prompt: str) -> str:
+    from core.resilience import aimessage_to_text, invoke_llm_resilient
 
-    return invoke_llm_resilient(llm, prompt, get_fallback=_fallback_llm)
+    msg = invoke_llm_resilient(llm, prompt, get_fallback=_fallback_llm)
+    return aimessage_to_text(msg)
 
 
 def resilient_stream(prompt: str):

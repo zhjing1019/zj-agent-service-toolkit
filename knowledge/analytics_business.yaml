@@ -5,8 +5,8 @@ entries:
   - id: branch_xuhui
     title: 分院别名
     content: |
-      「徐汇院」「徐汇旗舰院」对应分院编码 branch_code = SH-XH-01，表 ma_branch。
-      查询订单、日统计时通常 JOIN ma_branch ON ma_order.branch_id = ma_branch.id 或按 branch_id 过滤。
+      「徐汇院」「徐汇旗舰院」对应分院编码 branch_code = SH-XH-01，表 ma_branch；库中全名常为「臻美·徐汇旗舰院」。
+      查该院订单：SELECT … FROM ma_order o JOIN ma_branch b ON o.branch_id=b.id WHERE b.branch_code='SH-XH-01' OR b.name LIKE '%徐汇%'。
 
   - id: branch_pudong
     title: 浦东分院

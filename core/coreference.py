@@ -51,8 +51,7 @@ def resolve_retrieval_query(task: str, history_list: List[Dict]) -> str:
     history_text = _format_history(history, settings.RAG_COREFERENCE_MAX_MESSAGES)
     prompt = COREFERENCE_PROMPT.format(history=history_text, task=task)
     try:
-        res = resilient_invoke(prompt)
-        text = (res.content or "").strip()
+        text = (resilient_invoke(prompt) or "").strip()
         if is_degraded_reply(text):
             return task
         if not text:
