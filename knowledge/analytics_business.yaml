@@ -36,3 +36,19 @@ entries:
     content: |
       分期主表 ma_installment_plan 与订单一对一 order_id；期次明细 ma_installment_schedule.plan_id。
       问「每期应还」查 ma_installment_schedule.amount、due_date、status。
+
+  - id: xuhui_may_daily_metrics
+    title: 徐汇院按月查每日营收与订单量
+    content: |
+      用户问「徐汇院、某个月、日营收、每天订单量」时，优先用表 ma_daily_sales_stat：
+      字段 stat_date（统计日）、revenue（当日营收）、order_count（当日订单数）、branch_id（分院主键）。
+      徐汇院对应 ma_branch.branch_code = 'SH-XH-01'，或 name 含「徐汇」。
+      演示种子数据中年份为 2026：若用户只说「5月」未写年份，默认按 2026-05，条件示例：
+      stat_date >= '2026-05-01' AND stat_date < '2026-06-01'。
+      示例 SQL（按日列出）：
+      SELECT s.stat_date, s.order_count, s.revenue
+      FROM ma_daily_sales_stat s
+      JOIN ma_branch b ON s.branch_id = b.id
+      WHERE b.branch_code = 'SH-XH-01'
+        AND s.stat_date >= '2026-05-01' AND s.stat_date < '2026-06-01'
+      ORDER BY s.stat_date;

@@ -61,8 +61,7 @@ def _nl2sql_prompt(question: str, rag_block: str, schema_block: str) -> str:
 2. 只能查询物理表名以「{settings.ANALYTICS_ALLOWED_TABLE_PREFIX}」开头的表。
 3. 列名、表名必须与下方「表结构摘要」一致，不要臆造列。
 4. 若用户未指定行数，请自行 LIMIT（建议不超过 {settings.ANALYTICS_ROW_LIMIT}）。
-
-【业务词典与推理（从向量库检索，可能不完整）】
+5. 本库为演示数据：用户只说「某月」而未写年份时，**月份按 2026 年** 理解（与种子数据一致）。
 {rag_block}
 
 【表结构摘要（列名必须完全一致）】
