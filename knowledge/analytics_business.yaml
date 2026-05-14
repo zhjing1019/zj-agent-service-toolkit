@@ -43,6 +43,7 @@ entries:
       用户问「徐汇院、某个月、日营收、每天订单量」时，优先用表 ma_daily_sales_stat：
       字段 stat_date（统计日）、revenue（当日营收）、order_count（当日订单数）、branch_id（分院主键）。
       徐汇院对应 ma_branch.branch_code = 'SH-XH-01'，或 name 含「徐汇」。
+      禁止使用 WHERE b.name = '徐汇院'（库中无此精确全名，会查不到行）。
       演示种子数据中年份为 2026：若用户只说「5月」未写年份，默认按 2026-05，条件示例：
       stat_date >= '2026-05-01' AND stat_date < '2026-06-01'。
       示例 SQL（按日列出）：

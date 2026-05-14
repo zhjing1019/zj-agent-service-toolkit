@@ -8,16 +8,10 @@ from typing import Any
 
 import yaml
 from langchain_core.documents import Document
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from config.settings import settings
-
-
-def _engine():
-    return create_engine(
-        f"sqlite:///{settings.SQLITE_PATH}",
-        connect_args={"check_same_thread": False},
-    )
+from db.base import engine
 
 
 def load_business_entries() -> list[dict[str, Any]]:
@@ -31,8 +25,7 @@ def load_business_entries() -> list[dict[str, Any]]:
 
 def reflect_ma_tables() -> list[Document]:
     docs: list[Document] = []
-    eng = _engine()
-    with eng.connect() as conn:
+    with engine.connect() as conn:
         rows = conn.execute(
             text(
                 "SELECT name FROM sqlite_master WHERE type='table' "

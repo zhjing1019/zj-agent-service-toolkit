@@ -1230,16 +1230,16 @@ def seed_if_empty() -> bool:
                 )
             )
 
-        for d_off in range(10):
+        for d_off in range(31):
             db.add(
                 MaDailySalesStat(
                     branch_id=b1.id,
                     stat_date=date(2026, 5, 1) + timedelta(days=d_off),
-                    new_leads=5 + d_off,
-                    appt_count=15 + d_off,
-                    visit_count=10 + d_off,
+                    new_leads=5 + (d_off % 20),
+                    appt_count=15 + (d_off % 15),
+                    visit_count=10 + (d_off % 12),
                     order_count=3 + (d_off % 4),
-                    revenue=80000 + d_off * 12000,
+                    revenue=80000.0 + (d_off % 25) * 1200.0,
                 )
             )
         for d_off in range(5):

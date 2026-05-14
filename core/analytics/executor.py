@@ -7,16 +7,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Tuple
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from config.settings import settings
-
-
-def _engine():
-    return create_engine(
-        f"sqlite:///{settings.SQLITE_PATH}",
-        connect_args={"check_same_thread": False},
-    )
+from db.base import engine
 
 
 def _cell(v: Any) -> Any:
@@ -32,8 +26,7 @@ def _cell(v: Any) -> Any:
 def execute_read_only(sql: str, *, row_limit: int | None = None) -> Tuple[list[str], list[list[Any]], bool]:
     lim = row_limit if row_limit is not None else settings.ANALYTICS_ROW_LIMIT
     wrapped = f'SELECT * FROM ({sql}) AS "_analytics_sub" LIMIT {lim + 1}'
-    eng = _engine()
-    with eng.connect() as conn:
+    with engine.connect() as conn:
         result = conn.execute(text(wrapped))
         cols = list(result.keys())
         rows_raw = result.fetchall()

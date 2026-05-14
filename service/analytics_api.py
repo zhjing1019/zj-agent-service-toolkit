@@ -25,6 +25,14 @@ class NlQueryResponse(BaseModel):
     has_more: bool = False
     summary: str | None = None
     rag_snippets: list[str] = Field(default_factory=list)
+    used_empty_result_fallback: bool = Field(
+        default=False,
+        description="模型 SQL 返回 0 行时是否已用内置徐汇+5月日统计 SQL 兜底",
+    )
+    used_canonical_template: bool = Field(
+        default=False,
+        description="是否命中徐汇+5月+营收/订单 固定模板（未走大模型写 SQL）",
+    )
 
 
 @router.post("/nl-query", response_model=NlQueryResponse)
