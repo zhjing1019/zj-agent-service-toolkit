@@ -18,6 +18,8 @@ PERM_TASK_OBSERVE = "task.observe"  # 任务状态、运行列表
 PERM_LOGS_READ = "logs.read"
 PERM_TEMPLATES_READ = "templates.read"
 PERM_TEMPLATES_WRITE = "templates.write"
+PERM_ANALYTICS_QUERY = "analytics.query"  # 自然语言问数（NL2SQL）
+PERM_ANALYTICS_REINDEX = "analytics.reindex"  # 重建问数向量索引（与生产数据/算力相关）
 
 
 class Role(str, Enum):
@@ -47,6 +49,8 @@ class Principal:
     role: Role
     key_hint: str
     agent_allowlist: frozenset[str] | None
+    # 问数行级范围：仅 BUSINESS 且配置了 RBAC_BUSINESS_ANALYTICS_BRANCH_CODES 时非 None
+    analytics_branch_allowlist: frozenset[str] | None = None
 
     def has_permission(self, perm: str) -> bool:
         if self.role == Role.ADMIN:
@@ -73,6 +77,8 @@ _DEVELOPER_PERMS = frozenset(
         PERM_TASK_OBSERVE,
         PERM_LOGS_READ,
         PERM_TEMPLATES_READ,
+        PERM_ANALYTICS_QUERY,
+        PERM_ANALYTICS_REINDEX,
     }
 )
 
@@ -81,6 +87,7 @@ _BUSINESS_PERMS = frozenset(
         PERM_TASK_EXECUTE,
         PERM_TASK_OBSERVE,
         PERM_TEMPLATES_READ,
+        PERM_ANALYTICS_QUERY,
     }
 )
 
@@ -123,7 +130,12 @@ def _extract_api_key(request: Request) -> str | None:
 
 def resolve_principal(request: Request) -> Principal:
     if not settings.RBAC_ENABLED:
-        return Principal(role=Role.ADMIN, key_hint="(rbac-off)", agent_allowlist=None)
+        return Principal(
+            role=Role.ADMIN,
+            key_hint="(rbac-off)",
+            agent_allowlist=None,
+            analytics_branch_allowlist=None,
+        )
 
     key = _extract_api_key(request)
     if not key:
@@ -138,7 +150,20 @@ def resolve_principal(request: Request) -> Principal:
         raise HTTPException(status_code=401, detail="无效的 API Key")
     role, allow = row
     hint = key[-4:] if len(key) >= 4 else "****"
-    return Principal(role=role, key_hint=hint, agent_allowlist=allow)
+    biz_analytics: frozenset[str] | None = None
+    if role == Role.BUSINESS and settings.RBAC_BUSINESS_ANALYTICS_BRANCH_CODES:
+        parts = [
+            x.strip()
+            for x in settings.RBAC_BUSINESS_ANALYTICS_BRANCH_CODES.split(",")
+            if x.strip()
+        ]
+        biz_analytics = frozenset(parts) if parts else None
+    return Principal(
+        role=role,
+        key_hint=hint,
+        agent_allowlist=allow,
+        analytics_branch_allowlist=biz_analytics,
+    )
 
 
 def attach_principal(request: Request) -> None:

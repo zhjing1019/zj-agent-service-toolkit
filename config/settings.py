@@ -128,6 +128,10 @@ class Settings:
     RBAC_DEVELOPER_API_KEYS = os.getenv("RBAC_DEVELOPER_API_KEYS", "")
     RBAC_BUSINESS_API_KEYS = os.getenv("RBAC_BUSINESS_API_KEYS", "")
     RBAC_BUSINESS_AGENT_IDS = os.getenv("RBAC_BUSINESS_AGENT_IDS", "default")
+    # 业务用户问数：可选分院编码白名单（逗号分隔，如 SH-XH-01,SH-PD-02）。空=不限制（与管理员/开发者一致）
+    RBAC_BUSINESS_ANALYTICS_BRANCH_CODES = os.getenv(
+        "RBAC_BUSINESS_ANALYTICS_BRANCH_CODES", ""
+    ).strip()
     AGENT_TEMPLATES_FILE = os.getenv("AGENT_TEMPLATES_FILE", "./data/agent_templates.json")
 
     # Agent 整图 / SSE 总时限（图执行 + SSE 流式汇总共享同一墙钟预算，<=0 表示不限制）

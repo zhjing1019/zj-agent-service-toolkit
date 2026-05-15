@@ -125,7 +125,57 @@ def _should_try_xuhui_may_fallback(question: str) -> bool:
     return True
 
 
-def _nl2sql_prompt(question: str, rag_block: str, schema_block: str) -> str:
+def _xuhui_templates_allowed(allowed_branch_codes: frozenset[str] | None) -> bool:
+    """内置徐汇模板硬编码 SH-XH-01；若调用方不允许该院则不走模板。"""
+    if not allowed_branch_codes:
+        return True
+    return "SH-XH-01" in allowed_branch_codes
+
+
+def _scope_prompt_block(allowed_branch_codes: frozenset[str] | None) -> str:
+    if not allowed_branch_codes:
+        return ""
+    codes = ", ".join(f"'{c}'" for c in sorted(allowed_branch_codes))
+    return f"""
+【数据权限（必须遵守）】
+当前调用方仅允许查看 ma_branch.branch_code 属于以下编码的数据：{codes}。
+凡 SQL 涉及订单、日统计、客户、员工、库存等与分院相关的内容时，必须通过 JOIN ma_branch（别名自定）并包含
+对 ma_branch.branch_code 的约束，且 IN 列表**只能**使用上述编码（不得查询其它分院）。
+"""
+
+
+def _apply_branch_scope_rows(
+    cols: list[str],
+    rows: list[list[Any]],
+    allowed_branch_codes: frozenset[str] | None,
+) -> tuple[list[list[Any]], bool, str | None]:
+    """
+    结果层过滤：仅当结果集中存在 branch_code 列时生效。
+    不能替代 SQL 侧权限，作为业务用户白名单的二次收敛。
+    """
+    if not allowed_branch_codes:
+        return rows, False, None
+    idx = None
+    for i, c in enumerate(cols):
+        if str(c).lower() == "branch_code":
+            idx = i
+            break
+    if idx is None:
+        return (
+            rows,
+            False,
+            "已配置分院级数据权限，但本查询结果列中无 branch_code，无法在接口层对行做二次过滤；"
+            "安全上仍应以 API 身份与提示词约束为准。",
+        )
+    filtered = [
+        r for r in rows if len(r) > idx and str(r[idx]) in allowed_branch_codes
+    ]
+    return filtered, True, None
+
+
+def _nl2sql_prompt(
+    question: str, rag_block: str, schema_block: str, scope_block: str = ""
+) -> str:
     return f"""你是 SQLite 报表助手。用户问题如下。
 请只输出 **一个 JSON 对象**（不要 Markdown、不要多余解释），格式严格为：
 {{"sql":"...","notes":"一句话说明假设"}}
@@ -136,7 +186,7 @@ def _nl2sql_prompt(question: str, rag_block: str, schema_block: str) -> str:
 3. 列名、表名必须与下方「表结构摘要」一致，不要臆造列。
 4. 若用户未指定行数，请自行 LIMIT（建议不超过 {settings.ANALYTICS_ROW_LIMIT}）。
 5. 本库为演示数据：用户只说「某月」而未写年份时，**月份按 2026 年** 理解（与种子数据一致）。
-
+{scope_block}
 【系统约定（必读）】
 - 用户说「怎么查」「如何查」时，仍要生成 **可执行且能返回数据行** 的 SELECT，不要生成只含说明字符串、无真实指标的占位查询。
 - 用户口头「徐汇院」「徐汇旗舰院」：库中分院名多为「臻美·徐汇旗舰院」，**禁止** `WHERE b.name = '徐汇旗舰院'` 等精确全名（常 0 行）。请用 `b.branch_code = 'SH-XH-01'` 或 `b.name LIKE '%徐汇%'`。
@@ -181,6 +231,9 @@ def _empty_error(
         "rag_snippets": snippets,
         "used_canonical_template": False,
         "used_empty_result_fallback": False,
+        "data_scope_row_filter_applied": False,
+        "data_scope_branch_codes": None,
+        "data_scope_warning": None,
     }
 
 
@@ -194,26 +247,38 @@ def _success_payload(
     snippets: list[str],
     used_canonical_template: bool,
     used_empty_result_fallback: bool,
+    allowed_branch_codes: frozenset[str] | None = None,
 ) -> dict[str, Any]:
+    rows_f, applied, warn = _apply_branch_scope_rows(cols, rows, allowed_branch_codes)
     return {
         "ok": True,
         "sql": sql_norm,
         "validation_error": None,
         "columns": cols,
-        "rows": rows,
+        "rows": rows_f,
         "has_more": has_more,
         "summary": summary,
         "rag_snippets": snippets,
         "used_canonical_template": used_canonical_template,
         "used_empty_result_fallback": used_empty_result_fallback,
+        "data_scope_row_filter_applied": applied,
+        "data_scope_branch_codes": sorted(allowed_branch_codes)
+        if allowed_branch_codes
+        else None,
+        "data_scope_warning": warn,
     }
 
 
-def run_nl_query(question: str) -> dict[str, Any]:
+def run_nl_query(
+    question: str, *, allowed_branch_codes: frozenset[str] | None = None
+) -> dict[str, Any]:
     """
     完整问数流水线。
     返回 dict: ok, sql, validation_error, columns, rows, has_more, summary, rag_snippets,
-    used_canonical_template（是否命中内置固定模板：徐汇+5月订单、徐汇+5月日统计、徐汇/旗舰院+订单）, used_empty_result_fallback
+    used_canonical_template, used_empty_result_fallback,
+    data_scope_row_filter_applied, data_scope_branch_codes, data_scope_warning。
+
+    allowed_branch_codes: 可选分院 branch_code 白名单；非 None 时写入模型提示并在结果含 branch_code 列时过滤行。
     """
     q = (question or "").strip()
     if not q:
@@ -228,22 +293,30 @@ def run_nl_query(question: str) -> dict[str, Any]:
             "rag_snippets": [],
             "used_canonical_template": False,
             "used_empty_result_fallback": False,
+            "data_scope_row_filter_applied": False,
+            "data_scope_branch_codes": None,
+            "data_scope_warning": None,
         }
 
     snippets = retrieve_analytics_context(q)
     rag_block = "\n---\n".join(snippets) if snippets else "(当前无向量检索结果，请先运行 python -m core.analytics.reindex)"
     schema_block = build_compact_schema()
+    scope_block = _scope_prompt_block(allowed_branch_codes)
 
     # 高频问法：不依赖大模型写 SQL，直接用已校验模板（避免 name='徐汇院' 等 0 行）
-    # 「5 月 + 订单」须走 ma_order，不可先走日统计（否则用户以为查不出订单）
-    if _should_try_xuhui_may_order_list(q):
+    if _should_try_xuhui_may_order_list(q) and _xuhui_templates_allowed(
+        allowed_branch_codes
+    ):
         ok_mo, _msg_mo, sql_mo = validate_analytics_sql(_FALLBACK_XUHUI_MAY_ORDERS)
         if ok_mo and sql_mo:
             try:
                 cols_mo, rows_mo, more_mo = execute_read_only(sql_mo)
-                if rows_mo:
+                rows_vis, _, _ = _apply_branch_scope_rows(
+                    cols_mo, rows_mo, allowed_branch_codes
+                )
+                if rows_vis:
                     preview_lines = [
-                        str(dict(zip(cols_mo, r))) for r in rows_mo[:8]
+                        str(dict(zip(cols_mo, r))) for r in rows_vis[:8]
                     ]
                     preview = "\n".join(preview_lines)
                     summary_raw = resilient_invoke(
@@ -258,18 +331,24 @@ def run_nl_query(question: str) -> dict[str, Any]:
                         snippets=snippets,
                         used_canonical_template=True,
                         used_empty_result_fallback=False,
+                        allowed_branch_codes=allowed_branch_codes,
                     )
             except Exception:
                 pass
 
-    if _should_try_xuhui_may_fallback(q):
+    if _should_try_xuhui_may_fallback(q) and _xuhui_templates_allowed(
+        allowed_branch_codes
+    ):
         ok_c, _msg_c, sql_c = validate_analytics_sql(_FALLBACK_XUHUI_MAY_DAILY)
         if ok_c and sql_c:
             try:
                 cols_c, rows_c, more_c = execute_read_only(sql_c)
-                if rows_c:
+                rows_vis, _, _ = _apply_branch_scope_rows(
+                    cols_c, rows_c, allowed_branch_codes
+                )
+                if rows_vis:
                     preview_lines = [
-                        str(dict(zip(cols_c, r))) for r in rows_c[:8]
+                        str(dict(zip(cols_c, r))) for r in rows_vis[:8]
                     ]
                     preview = "\n".join(preview_lines)
                     summary_raw = resilient_invoke(
@@ -284,18 +363,22 @@ def run_nl_query(question: str) -> dict[str, Any]:
                         snippets=snippets,
                         used_canonical_template=True,
                         used_empty_result_fallback=False,
+                        allowed_branch_codes=allowed_branch_codes,
                     )
             except Exception:
                 pass
 
-    if _should_try_xuhui_orders(q):
+    if _should_try_xuhui_orders(q) and _xuhui_templates_allowed(allowed_branch_codes):
         ok_o, _msg_o, sql_o = validate_analytics_sql(_FALLBACK_XUHUI_ORDERS)
         if ok_o and sql_o:
             try:
                 cols_o, rows_o, more_o = execute_read_only(sql_o)
-                if rows_o:
+                rows_vis, _, _ = _apply_branch_scope_rows(
+                    cols_o, rows_o, allowed_branch_codes
+                )
+                if rows_vis:
                     preview_lines = [
-                        str(dict(zip(cols_o, r))) for r in rows_o[:8]
+                        str(dict(zip(cols_o, r))) for r in rows_vis[:8]
                     ]
                     preview = "\n".join(preview_lines)
                     summary_raw = resilient_invoke(
@@ -310,11 +393,14 @@ def run_nl_query(question: str) -> dict[str, Any]:
                         snippets=snippets,
                         used_canonical_template=True,
                         used_empty_result_fallback=False,
+                        allowed_branch_codes=allowed_branch_codes,
                     )
             except Exception:
                 pass
 
-    raw = resilient_invoke(_nl2sql_prompt(q, rag_block, schema_block))
+    raw = resilient_invoke(
+        _nl2sql_prompt(q, rag_block, schema_block, scope_block)
+    )
     try:
         payload = _extract_json_object(raw)
     except json.JSONDecodeError as e:
@@ -339,39 +425,49 @@ def run_nl_query(question: str) -> dict[str, Any]:
         )
 
     used_fallback = False
-    if not rows and _should_try_xuhui_may_order_list(q):
+    if not rows and _should_try_xuhui_may_order_list(
+        q
+    ) and _xuhui_templates_allowed(allowed_branch_codes):
         ok_mo, _, sql_mo = validate_analytics_sql(_FALLBACK_XUHUI_MAY_ORDERS)
         if ok_mo and sql_mo:
             try:
                 c2, r2, h2 = execute_read_only(sql_mo)
-                if r2:
+                r2_vis, _, _ = _apply_branch_scope_rows(c2, r2, allowed_branch_codes)
+                if r2_vis:
                     cols, rows, has_more, sql_norm = c2, r2, h2, sql_mo
                     used_fallback = True
             except Exception:
                 pass
-    if not rows and _should_try_xuhui_may_fallback(q):
+    if not rows and _should_try_xuhui_may_fallback(
+        q
+    ) and _xuhui_templates_allowed(allowed_branch_codes):
         ok_fb, msg_fb, sql_fb = validate_analytics_sql(_FALLBACK_XUHUI_MAY_DAILY)
         if ok_fb and sql_fb:
             try:
                 c2, r2, h2 = execute_read_only(sql_fb)
-                if r2:
+                r2_vis, _, _ = _apply_branch_scope_rows(c2, r2, allowed_branch_codes)
+                if r2_vis:
                     cols, rows, has_more, sql_norm = c2, r2, h2, sql_fb
                     used_fallback = True
             except Exception:
                 pass
-    if not rows and _should_try_xuhui_orders(q):
+    if not rows and _should_try_xuhui_orders(q) and _xuhui_templates_allowed(
+        allowed_branch_codes
+    ):
         ok_o, _, sql_o = validate_analytics_sql(_FALLBACK_XUHUI_ORDERS)
         if ok_o and sql_o:
             try:
                 c2, r2, h2 = execute_read_only(sql_o)
-                if r2:
+                r2_vis, _, _ = _apply_branch_scope_rows(c2, r2, allowed_branch_codes)
+                if r2_vis:
                     cols, rows, has_more, sql_norm = c2, r2, h2, sql_o
                     used_fallback = True
             except Exception:
                 pass
 
+    rows_vis, _, _ = _apply_branch_scope_rows(cols, rows, allowed_branch_codes)
     preview_lines = []
-    for r in rows[:8]:
+    for r in rows_vis[:8]:
         preview_lines.append(str(dict(zip(cols, r))))
     preview = "\n".join(preview_lines) if preview_lines else "(无行)"
     summary_raw = resilient_invoke(_summary_prompt(q, sql_norm, preview))
@@ -386,4 +482,5 @@ def run_nl_query(question: str) -> dict[str, Any]:
         snippets=snippets,
         used_canonical_template=False,
         used_empty_result_fallback=used_fallback,
+        allowed_branch_codes=allowed_branch_codes,
     )
