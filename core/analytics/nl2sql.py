@@ -16,12 +16,15 @@ from core.analytics.retrieve import retrieve_analytics_context
 from core.analytics.sql_guard import validate_analytics_sql
 from core.llm import resilient_invoke
 
-
+# 构建紧凑的表结构摘要
 def build_compact_schema() -> str:
     """当前库里所有 ma_* 表的一行列清单，供模型对齐列名。"""
     lines: list[str] = []
+    # 获取允许的表前缀
     pfx = settings.ANALYTICS_ALLOWED_TABLE_PREFIX.replace("%", "")
+    # 连接数据库
     with engine.connect() as conn:
+        # 获取所有表
         tables = conn.execute(
             text(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -29,13 +32,16 @@ def build_compact_schema() -> str:
             ),
             {"pfx": f"{pfx}%"},
         ).fetchall()
+        # 获取所有列
         for (tbl,) in tables:
+            # 获取所有列
             cols = conn.execute(text(f'PRAGMA table_info("{tbl}")')).fetchall()
+            # 获取所有列名
             names = [c[1] for c in cols]
             lines.append(f"{tbl}: " + ", ".join(names))
     return "\n".join(lines) if lines else "(无 ma_* 表，请先 init_database)"
 
-
+# 提取 JSON 对象
 def _extract_json_object(text: str) -> dict[str, Any]:
     s = (text or "").strip()
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", s, re.IGNORECASE)
@@ -55,7 +61,7 @@ ORDER BY s.stat_date
 LIMIT 200
 """.strip()
 
-
+# 某月订单：必须按 ordered_at 限月，避免误走日统计表
 _FALLBACK_XUHUI_ORDERS = """
 SELECT o.id, o.order_no, o.ordered_at, o.total_amount, o.paid_amount, o.order_status,
        b.name AS branch_name, b.branch_code
@@ -78,28 +84,30 @@ ORDER BY o.ordered_at DESC
 LIMIT 200
 """.strip()
 
-
+# 判断是否包含徐汇分支提示
 def _has_xuhui_branch_hint(q: str) -> bool:
     """徐汇旗舰院系：全名常含「臻美·徐汇」；勿把浦东旗舰算进来。"""
     return ("徐汇" in q) or ("旗舰" in q and "浦东" not in q) or (
         "臻美" in q and "徐汇" in q
     )
 
-
+# 判断是否包含5月提示
 def _has_may_2026_hint(q: str) -> bool:
     return any(x in q for x in ("5月", "五月", "05月", "2026-05", "五月份"))
 
-
+# 判断是否包含徐汇系 + 5 月 + 查订单行 → ma_order + 月份区间（优先于日统计模板）
 def _should_try_xuhui_may_order_list(question: str) -> bool:
     """徐汇系 + 5 月 + 查订单行 → ma_order + 月份区间（优先于日统计模板）。"""
     q = (question or "").strip()
+    # 判断是否包含徐汇分支提示和5月提示
     if not _has_xuhui_branch_hint(q) or not _has_may_2026_hint(q):
         return False
+    # 判断是否包含订单相关关键词
     return any(x in q for x in ("订单", "下单", "销售单", "order")) or (
         "order" in q.lower()
     )
 
-
+# 判断是否包含徐汇分支提示和订单相关关键词
 def _should_try_xuhui_orders(question: str) -> bool:
     """徐汇/旗舰院 + 查订单（不要求带月份）。"""
     q = (question or "").strip()
@@ -111,7 +119,7 @@ def _should_try_xuhui_orders(question: str) -> bool:
     ) or ("order" in q.lower())
     return branch_hit and order_hit
 
-
+# 判断是否包含徐汇分支提示和5月提示
 def _should_try_xuhui_may_fallback(question: str) -> bool:
     q = (question or "").strip()
     if _should_try_xuhui_may_order_list(q):
@@ -124,14 +132,14 @@ def _should_try_xuhui_may_fallback(question: str) -> bool:
         return False
     return True
 
-
+# 判断是否允许使用徐汇模板
 def _xuhui_templates_allowed(allowed_branch_codes: frozenset[str] | None) -> bool:
     """内置徐汇模板硬编码 SH-XH-01；若调用方不允许该院则不走模板。"""
     if not allowed_branch_codes:
         return True
     return "SH-XH-01" in allowed_branch_codes
 
-
+# 构建数据权限提示块
 def _scope_prompt_block(allowed_branch_codes: frozenset[str] | None) -> str:
     if not allowed_branch_codes:
         return ""
@@ -143,7 +151,7 @@ def _scope_prompt_block(allowed_branch_codes: frozenset[str] | None) -> str:
 对 ma_branch.branch_code 的约束，且 IN 列表**只能**使用上述编码（不得查询其它分院）。
 """
 
-
+# 结果层过滤：仅当结果集中存在 branch_code 列时生效
 def _apply_branch_scope_rows(
     cols: list[str],
     rows: list[list[Any]],
@@ -172,7 +180,7 @@ def _apply_branch_scope_rows(
     ]
     return filtered, True, None
 
-
+# 构建NL2SQL提示块
 def _nl2sql_prompt(
     question: str, rag_block: str, schema_block: str, scope_block: str = ""
 ) -> str:
@@ -203,7 +211,7 @@ def _nl2sql_prompt(
 {question}
 """
 
-
+# 构建总结提示块
 def _summary_prompt(question: str, sql: str, preview: str) -> str:
     return f"""用户问题：{question}
 已执行 SQL：{sql}
@@ -213,7 +221,7 @@ def _summary_prompt(question: str, sql: str, preview: str) -> str:
 若结果为空，说明无数据并给出可能原因（时间范围、分院条件等）。
 """
 
-
+# 构建空错误提示块
 def _empty_error(
     *,
     err: str,
@@ -236,7 +244,7 @@ def _empty_error(
         "data_scope_warning": None,
     }
 
-
+# 构建成功提示块
 def _success_payload(
     *,
     sql_norm: str,
@@ -268,7 +276,7 @@ def _success_payload(
         "data_scope_warning": warn,
     }
 
-
+# 完整问数流水线
 def run_nl_query(
     question: str, *, allowed_branch_codes: frozenset[str] | None = None
 ) -> dict[str, Any]:
@@ -297,10 +305,13 @@ def run_nl_query(
             "data_scope_branch_codes": None,
             "data_scope_warning": None,
         }
-
+    # 检索向量库
     snippets = retrieve_analytics_context(q)
+    # 构建RAG块
     rag_block = "\n---\n".join(snippets) if snippets else "(当前无向量检索结果，请先运行 python -m core.analytics.reindex)"
+    # 构建表结构摘要块
     schema_block = build_compact_schema()
+    # 构建数据权限提示块
     scope_block = _scope_prompt_block(allowed_branch_codes)
 
     # 高频问法：不依赖大模型写 SQL，直接用已校验模板（避免 name='徐汇院' 等 0 行）

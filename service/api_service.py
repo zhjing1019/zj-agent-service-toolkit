@@ -1,5 +1,4 @@
 # 升级成 HTTP 接口服务
-
 import asyncio
 import json
 import mimetypes
@@ -45,7 +44,7 @@ from security.rbac import (
 )
 
 
-
+# 请求参数
 class AgentChatReq(BaseModel):
     session_id: str | None = None
     task: str = ""
@@ -67,13 +66,13 @@ class AgentChatReq(BaseModel):
         out = [str(x).strip() for x in v if str(x).strip()]
         return out[:lim]
 
-
+# 解析用户上传的图片路径
 def _resolve_user_image_paths(image_ids: list[str] | None) -> list[str]:
     from service.chat_upload import resolve_upload_image_paths
 
     return resolve_upload_image_paths(list(image_ids or []))
 
-
+# 获取有效的任务
 def _effective_chat_task(task: str, paths: list[str]) -> str:
     t = (task or "").strip()
     if t:
@@ -82,7 +81,7 @@ def _effective_chat_task(task: str, paths: list[str]) -> str:
         return "请结合我上传的图片回答，并检索知识库中与图片或问题相关的内容。"
     return ""
 
-
+# 获取公共知识库的引用图片
 def _public_knowledge_refs(refs: list) -> list[dict]:
     out: list[dict] = []
     for r in refs:
@@ -107,14 +106,15 @@ def _public_knowledge_refs(refs: list) -> list[dict]:
         )
     return out
 
+# 任务恢复请求参数
 class TaskResumeReq(BaseModel):
     checkpoint_thread_id: str
 
-
+# 获取配置
 def _invoke_cfg(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
-
+# 确保新的聊天调用被允许
 def _assert_new_chat_invoke_allowed(thread_id: str) -> None:
     """禁止在「已结束」或「停在断点」的 thread 上再次整图 /chat，避免状态串台。"""
     snap = agent_graph.graph.get_state(_invoke_cfg(thread_id))
@@ -267,29 +267,53 @@ def knowledge_image_serve(
     mt = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
     return FileResponse(target, media_type=mt)
 
+# 接口：聊天
 @router.post("/chat")
+# 在头部添加注释，说明该接口是用于聊天的
+# 说明该接口是用于聊天的，用于与LangGraph进行交互，生成回复
+# 参数：
+# request: Request
+# req: AgentChatReq
+# db: Session
+# _: None = Depends(require_perm(PERM_TASK_EXECUTE))
+# 返回：dict
+# 说明：返回的dict中包含session_id、checkpoint_thread_id、data、referenced_images
+# 其中data是LangGraph生成的回复，referenced_images是LangGraph生成的引用图片
 def agent_chat(
+    # fastAPI Request对象，用于获取请求的参数
     request: Request,
+    # AgentChatReq对象，用于获取请求的参数
     req: AgentChatReq,
+    # 数据库Session对象，用于获取数据库的连接
     db: Session = Depends(get_db),
+    # 权限依赖，用于获取权限
     _: None = Depends(require_perm(PERM_TASK_EXECUTE)),
 ):
+    # 确保LangGraph的聊天权限
     ensure_langgraph_chat(request, req.agent_id)
+    # 获取checkpoint_thread_id
     checkpoint_thread_id = (req.checkpoint_thread_id or "").strip() or str(
         uuid.uuid4()
     )
     try:
+        # 如果session_id为空，则生成一个session_id
         if not req.session_id:
             req.session_id = chat_repo.gen_session_id()
 
+        # 确保新的聊天调用被允许
         _assert_new_chat_invoke_allowed(checkpoint_thread_id)
 
+        # 调用_resolve_user_image_paths方法获取用户上传的图片路径
         paths = _resolve_user_image_paths(req.image_ids)
+        # 调用_effective_chat_task方法获取有效的任务
         eff_task = _effective_chat_task(req.task, paths)
+        # 如果任务为空，则抛出HTTP异常
         if not eff_task:
             raise HTTPException(status_code=400, detail="task与图片不能同时为空")
 
+        # 调用chat_repo.get_history方法获取历史记录
         history = chat_repo.get_history(db, req.session_id)
+        # 初始化LangGraph的初始状态 
         initial = {
             "task": eff_task,
             "is_safe": False,
@@ -309,29 +333,37 @@ def agent_chat(
             "rag_referenced_images": [],
         }
 
+        # 调用task_run_repo.upsert_start方法更新任务状态
         task_run_repo.upsert_start(
             db, checkpoint_thread_id, req.session_id, eff_task[:2000]
         )
+        # 调用_invoke_cfg方法获取配置
         cfg = _invoke_cfg(checkpoint_thread_id)
+        # 调用invoke_langgraph_with_timeout方法执行LangGraph
         res = invoke_langgraph_with_timeout(
             agent_graph.graph,
             initial,
             cfg,
             settings.AGENT_GRAPH_TIMEOUT_SEC,
         )
-
+        # 获取LangGraph的回复
         agent_reply = res["result"]
+        # 调用task_run_repo.mark_completed方法更新任务状态
         task_run_repo.mark_completed(db, checkpoint_thread_id, agent_reply)
 
+        # 获取LangGraph的引用图片   
         refs_raw = res.get("rag_referenced_images") or []
+        # 调用_public_knowledge_refs方法获取公共知识库的引用图片
         pub_refs = _public_knowledge_refs(refs_raw if isinstance(refs_raw, list) else [])
-
+        # 获取用户上传的图片
         user_att = (
             json.dumps({"upload_image_ids": req.image_ids}, ensure_ascii=False)
             if req.image_ids
             else None
         )
+        # 调用chat_repo.save_chat方法保存用户消息
         chat_repo.save_chat(db, req.session_id, "user", eff_task, user_att)
+        # 调用chat_repo.save_chat方法保存LangGraph的回复
         agent_att = (
             json.dumps({"referenced_images": pub_refs}, ensure_ascii=False)
             if pub_refs

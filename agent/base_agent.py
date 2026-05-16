@@ -3,6 +3,7 @@ import re
 from config.settings import settings
 from config.logger import logger
 
+# 初始化智能体
 class BaseAgent:
     def __init__(self, name="MiniAgent"):
         self.name = name

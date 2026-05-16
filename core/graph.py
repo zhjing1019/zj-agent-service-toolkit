@@ -25,7 +25,7 @@ from core.resilience import is_degraded_reply, is_retryable_tool_error
 from core.task_timeout import ToolExecutionTimeoutError, run_tool_call_with_timeout
 # 可视化功能已内置在编译后的图对象中，无需额外导入
 
-
+# 判断任务是否是演示库问数
 def _task_looks_like_demo_analytics(task: str) -> bool:
     """
     与主 RAG 文档库无关、应走演示库问数的问题（规划模型偶发选 rag 时纠偏）。

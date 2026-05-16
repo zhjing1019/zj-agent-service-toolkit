@@ -241,6 +241,7 @@ python main.py --index-rag --rebuild
 | **`ANALYTICS_ROW_LIMIT`** / **`ANALYTICS_TOP_K`** / **`ANALYTICS_ALLOWED_TABLE_PREFIX`** | 问数行上限、检索条数、允许表名前缀（默认 `ma_`） |
 | `IMAGE_RAG_*` | 知识库图片检索相关 |
 | `RBAC_ENABLED` / `RBAC_*_API_KEYS` / `RBAC_BUSINESS_AGENT_IDS` | 可选 API Key 与角色 |
+| **`RBAC_BUSINESS_ANALYTICS_BRANCH_CODES`** | 仅**业务用户**问数：可选 `branch_code` 白名单（逗号分隔）；见 `docs/AI_ANALYTICS_SETUP.md`「问数权限」 |
 
 更多项见 `config/settings.py`、`security/rbac.py`。
 
@@ -271,8 +272,8 @@ python main.py --index-rag --rebuild
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/nl-query` | 自然语言问数，body：`{"question":"..."}` |
-| `POST` | `/reindex-analytics` | 重建问数向量库（会 `init_database`） |
+| `POST` | `/nl-query` | 自然语言问数；`RBAC_ENABLED=true` 时需带 API Key；响应含 `data_scope_*` 分院范围字段 |
+| `POST` | `/reindex-analytics` | 重建问数向量库；需 **开发者或管理员** 权限（业务 Key 不可调用） |
 
 ---
 
